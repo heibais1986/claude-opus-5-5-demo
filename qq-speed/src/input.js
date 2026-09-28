@@ -41,7 +41,7 @@ export class Input {
       wPressed: this.was('KeyW'),
       nitroPressed: this.was('ControlLeft', 'ControlRight', 'Space', 'TouchNitro'),
       swapPressed: this.was('AltLeft', 'AltRight', 'TouchSwap'),
-      resetPressed: this.was('KeyR'),
+      resetPressed: this.was('KeyR', 'TouchReset'),
     };
     this.pressed.clear();
     this.touchPressed.clear();
@@ -72,6 +72,7 @@ export class Input {
     btn('#t-right', 'right');
     btn('#t-drift', 'shift');
     btn('#t-brake', 'down');
+    btn('#t-reset', null, 'TouchReset');
     btn('#t-nitro', null, 'TouchNitro');
     btn('#t-boost', null, 'TouchBoost');
     btn('#t-swap', null, 'TouchSwap');

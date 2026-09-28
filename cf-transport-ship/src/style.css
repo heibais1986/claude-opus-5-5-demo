@@ -6,8 +6,8 @@
   --cn: "PingFang SC","Microsoft YaHei","Noto Sans CJK SC","Source Han Sans SC",sans-serif;
 }
 *{box-sizing:border-box}
-html,body{margin:0;height:100%;overflow:hidden;background:#05070a;color:var(--hud);font-family:var(--cn);user-select:none;-webkit-user-select:none}
-#c{position:fixed;inset:0;width:100%;height:100%;display:block;cursor:crosshair}
+html,body{margin:0;height:100%;overflow:hidden;background:#05070a;color:var(--hud);font-family:var(--cn);user-select:none;-webkit-user-select:none;overscroll-behavior:none}
+#c{position:fixed;inset:0;width:100%;height:100%;display:block;cursor:crosshair;touch-action:none}
 #ui{position:fixed;inset:0;pointer-events:none;z-index:2}
 .hidden{display:none!important}
 button{font-family:inherit}
@@ -176,7 +176,7 @@ body.lk #clinks{opacity:.22}
 .card img{width:100%;height:56px;object-fit:contain}
 .card b{display:block;font-family:var(--num);letter-spacing:2px;margin-top:4px}
 .card small{color:var(--hudDim);font-size:11px}
-#touch{position:absolute;inset:0;pointer-events:none}
+#touch{position:absolute;inset:0;pointer-events:none;touch-action:none}
 #touch .pad{position:absolute;pointer-events:auto;border-radius:50%;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.25)}
 #touch .btn{position:absolute;pointer-events:auto;border-radius:50%;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.35);display:grid;place-items:center;font-size:13px;color:#fff}
 @media (max-width:760px){

@@ -4,6 +4,11 @@ export class TouchControls {
     this.g = game;
     this.enabled = matchMedia('(pointer:coarse)').matches || new URLSearchParams(location.search).has('touch');
     if (!this.enabled) return;
+    // 阻止浏览器手势（双指/双击缩放、下拉回弹）干扰视角拖动；菜单界面(.screen)保留滚动
+    document.addEventListener('touchmove', (e) => {
+      if (!(e.target instanceof Element && e.target.closest('.screen'))) e.preventDefault();
+    }, { passive: false });
+    document.addEventListener('gesturestart', (e) => e.preventDefault());
     const root = document.getElementById('touch');
     root.classList.remove('hidden');
     const W = () => window.innerWidth, H = () => window.innerHeight;
@@ -30,6 +35,7 @@ export class TouchControls {
     btn('蹲', 210, 40, 54, () => { const p = P(); if (p) p.touch.crouch = !p.touch.crouch; });
     btn('R', 40, 250, 50, () => { const p = P(); if (p) p.pressed.add('KeyR'); });
     btn('切', 100, 250, 50, () => { const p = P(); if (p) p.pressed.add('KeyQ'); });
+    btn('包', 160, 250, 50, () => { const p = P(); if (p) p.pressed.add('KeyB'); });
     btn('镜', 40, 60, 60, () => { const p = P(); if (p) { p.mouse.rp = true; } });
     // 摇杆
     let padId = null, cx = 0, cy = 0, lookId = null, lx = 0, ly = 0;
