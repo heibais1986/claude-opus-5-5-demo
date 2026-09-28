@@ -68,7 +68,12 @@ export class HUD {
       });
     }
     $('#btnLoadClose').addEventListener('click', () => this.g.closeLoadout());
-    if (matchMedia('(pointer:coarse)').matches) $('#touchNote').classList.remove('hidden');
+    if (matchMedia('(pointer:coarse)').matches) {
+      $('#touchNote').classList.remove('hidden');
+      const bl = $('#btnLayout');
+      bl.classList.remove('hidden');
+      bl.addEventListener('click', () => this.g.touch && this.g.touch.enterEdit());
+    }
     for (const a of this.root.querySelectorAll('#clinks a, .mlinks a'))
       a.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
   }
@@ -369,6 +374,7 @@ const TEMPLATE = `
   <div class="opt"><div class="lab">音量</div><div class="slider" data-k="vol"><input type="range" min="0" max="1" step="0.05"><span></span></div></div>
   <div class="opt"><div class="lab">时间</div><div class="seg" data-k="tod"><button data-v="day">白天</button><button data-v="dusk">黄昏</button></div></div>
   <button class="go" id="btnResume">继 续</button><button class="go sec" id="btnQuit" style="margin-top:10px">退出到主菜单</button>
+  <button class="go sec hidden" id="btnLayout" style="margin-top:10px">自定义按键布局</button>
 </div></div>
 
 <div id="loadout" class="screen hidden"><div class="loadBox"><h2>更换主武器</h2><div class="sub">复活时生效；在出生点内立即生效。副武器沙漠之鹰、军刀、手雷自动配备。</div>

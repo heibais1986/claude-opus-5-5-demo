@@ -179,6 +179,10 @@ body.lk #clinks{opacity:.22}
 #touch{position:absolute;inset:0;pointer-events:none;touch-action:none}
 #touch .pad{position:absolute;pointer-events:auto;border-radius:50%;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.25)}
 #touch .btn{position:absolute;pointer-events:auto;border-radius:50%;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.35);display:grid;place-items:center;font-size:13px;color:#fff}
+#touch.editing .btn,#touch.editing .pad{background:rgba(245,179,33,.3);border-color:var(--accent);border-style:dashed}
+#touch .editbar{position:absolute;top:10px;left:50%;transform:translateX(-50%);pointer-events:auto;display:flex;gap:10px;align-items:center;background:rgba(0,0,0,.75);border:1px solid rgba(255,255,255,.3);border-radius:10px;padding:8px 12px;font-size:13px;white-space:nowrap}
+#touch .editbar button{padding:6px 14px;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.35);color:#fff;border-radius:6px;font-size:13px;font-family:var(--cn)}
+#touch .editbar button:active{background:rgba(245,179,33,.4)}
 @media (max-width:760px){
   .menuBox{grid-template-columns:1fr;padding:18px}
   .title h1{font-size:40px}
