@@ -252,6 +252,7 @@ class Game {
   }
 
   toMenu() {
+    document.body.classList.remove('playing');
     ['pause', 'result'].forEach((i) => $(i).classList.add('hidden'));
     $('menu').classList.remove('hidden');
     $('touch').classList.add('hidden');
@@ -462,6 +463,7 @@ class Game {
     if (this.loading) return;
     this.audio.init();
     this.lockLandscape();
+    document.body.classList.add('playing');
     ['menu', 'pause', 'result'].forEach((i) => $(i).classList.add('hidden'));
     this.itemMode = this.settings.mode === 'item';
     this.makeRacers(true);

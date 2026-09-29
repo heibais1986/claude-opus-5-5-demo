@@ -163,6 +163,7 @@ export class Game {
     this.vm.setTeam(my); this.vm.equip(this.player.weapon.id, 0.6);
     this.hud.slots(this.player.inv, 0);
     this.playing = true; this.paused = false; this.ended = false;
+    document.body.classList.add('playing');
     this.hud.show(null);
     this.lock();
     setTimeout(() => audio.announce('Go go go!'), 400);
@@ -248,6 +249,7 @@ export class Game {
   }
   quitToMenu() {
     this.playing = false; this.paused = false; this.ended = true;
+    document.body.classList.remove('playing');
     audio.stopAmbient(); audio.setLowHealth(false);
     for (const a of this.actors) this.renderer.scene.remove(a.soldier.root);
     for (const t of this.tags) this.renderer.scene.remove(t.sprite);

@@ -171,6 +171,35 @@ table.res td.pos{font-family:var(--num);font-style:italic;color:var(--yellow);fo
   #countdown{font-size:120px}
 }
 
+/* ---------- 矮屏（手机横屏）压缩菜单，避免内容超出可视高度 ---------- */
+@media (max-height:520px){
+  .screen{padding:8px 12px}
+  .logo{font-size:34px;letter-spacing:2px}
+  .sub{margin:2px 0 6px;font-size:11px;letter-spacing:2px}
+  .mlinks{margin-top:4px}
+  .menu-grid{grid-template-columns:1.35fr 1fr;gap:8px}
+  .card{padding:6px 10px}
+  .card h3{font-size:12px;margin-bottom:5px}
+  .opts{gap:5px}
+  .opt{padding:4px 9px;font-size:12px}
+  .maps{gap:6px}
+  .map{min-height:44px;padding:5px 8px}
+  .map .nm{font-size:14px}
+  .map .en{font-size:9px}
+  .map .tg{font-size:10px;margin-top:2px}
+  .skin{width:30px;height:30px}
+  #skinname{font-size:11px;margin-top:4px;height:14px}
+  .go{margin-top:6px;padding:6px 40px;font-size:17px;letter-spacing:4px}
+  .keylist{font-size:11px;line-height:1.5}
+  .tip{font-size:10px;line-height:1.4;margin-top:2px}
+  .foot{margin-top:6px;font-size:10px}
+  .box{padding:12px 18px}
+  .box h2{font-size:20px;margin-bottom:8px}
+  .btns .go{padding:6px 22px;font-size:15px;margin-top:6px}
+  table.res{font-size:12px;margin:2px 0 6px}
+  table.res td{padding:4px 6px}
+}
+
 /* ---------- 手机竖屏提示（触屏设备且竖屏时显示） ---------- */
 #rotate{position:fixed;inset:0;z-index:50;display:none;flex-direction:column;align-items:center;justify-content:center;gap:22px;
   background:linear-gradient(180deg,rgba(10,20,48,.95),rgba(6,14,36,.98));text-align:center}
@@ -179,7 +208,7 @@ table.res td.pos{font-family:var(--num);font-style:italic;color:var(--yellow);fo
 @keyframes phoneRot{0%,25%{transform:rotate(0)}65%,100%{transform:rotate(90deg)}}
 #rotate .t1{font-size:22px;font-weight:800;letter-spacing:6px}
 #rotate .t2{font-size:13px;color:var(--muted);letter-spacing:1px}
-@media (orientation: portrait) and (pointer: coarse){#rotate{display:flex}}
+@media (orientation: portrait) and (pointer: coarse){body.playing #rotate{display:flex}}
 </style>
 </head>
 <body>
