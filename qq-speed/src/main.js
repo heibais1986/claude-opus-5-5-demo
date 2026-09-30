@@ -1092,7 +1092,7 @@ class Game {
 
 window.addEventListener('DOMContentLoaded', () => {
   try {
-    window.game = new Game();
+    new Game();
   } catch (e) {
     document.body.innerHTML = `<div style="padding:40px;color:#fff;font-family:sans-serif">无法初始化 WebGL：${e.message}</div>`;
     throw e;

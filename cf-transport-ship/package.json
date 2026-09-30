@@ -9,8 +9,5 @@
   "dependencies": {
     "esbuild": "^0.28.2",
     "three": "^0.186.0"
-  },
-  "devDependencies": {
-    "playwright-core": "^1.63.0"
   }
 }

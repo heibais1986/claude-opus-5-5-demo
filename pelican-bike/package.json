@@ -3,9 +3,6 @@
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
   "keywords": [],
   "author": "",
   "license": "ISC",
@@ -13,7 +10,6 @@
   "dependencies": {
     "esbuild": "^0.28.2",
     "lil-gui": "^0.21.0",
-    "playwright-core": "^1.63.0",
     "three": "^0.186.0"
   }
 }

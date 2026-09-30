@@ -147,20 +147,6 @@ for (let i = 0; i < 5; i++) {
   jumpers.push({ mesh: m, t: -1, x: 0, z: 0, dur: 1.2, h: 1.5, dir: 1 });
 }
 
-// 调试：?nantest=1 在画面中放一个输出 NaN/Inf 的小方块，用于验证后期清理
-if (qp('nantest', '0') === '1') {
-  const bad = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.06, 0.06),
-    new THREE.ShaderMaterial({
-      uniforms: { uZero: { value: 0 } },
-      vertexShader: 'void main(){ gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
-      fragmentShader: 'uniform float uZero; void main(){ float n = uZero / uZero; float i = 1.0 / uZero; gl_FragColor = vec4(n, i, n, 1.0); }',
-    }),
-  );
-  bad.position.set(0.3, 1.3, 0.6);
-  scene.add(bad);
-}
-
 // ---------------- 后期 ----------------
 // 泛光前清理 NaN/Inf：一个坏像素会被 Bloom 的多级模糊扩散成大块黑色矩形。
 // 用位运算判断（不依赖 isnan，避免被驱动的快速数学优化掉），并把 HDR 值限制在安全范围内
@@ -214,7 +200,7 @@ function buildComposer() {
   composer.setPixelRatio(renderer.getPixelRatio());
   composer.setSize(innerWidth, innerHeight);
   composer.addPass(new RenderPass(scene, camera));
-  if (qp('nosanitize', '0') !== '1') composer.addPass(new ShaderPass(sanitizeShader));
+  composer.addPass(new ShaderPass(sanitizeShader));
   bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth / 2, innerHeight / 2), 0.4, 0.55, 0.92);
   bloom.enabled = quality.bloom && settings.bloom;
   composer.addPass(bloom);
@@ -1256,7 +1242,6 @@ $('#startMute').addEventListener('click', () => {
   $('[data-act="music"]').classList.add('off');
   start(false);
 });
-if (qp('autostart', '0') === '1') start(false);
 setCamMode(camMode, true);
 
 // ---------------- 主循环 ----------------
@@ -1268,13 +1253,11 @@ const scarfB = new THREE.Vector3();
 const bodyW = new THREE.Vector3();
 const collider = { center: bodyW, radius: 0.25 };
 let info = { elev: 10, night: 0 };
-const fixedDt = qp('dt', '');
 const bufSize = new THREE.Vector2();
 
 function frame(ts) {
   timer.update(ts);
   let dt = Math.min(timer.getDelta(), 1 / 20);
-  if (fixedDt) dt = +fixedDt;
   if (S.paused) dt = 0;
   S.t += dt;
   S.time += dt;
@@ -1367,33 +1350,3 @@ refreshEnv();
 requestAnimationFrame(frame);
 $('#loading')?.remove();
 document.body.classList.add('ready');
-
-// 调试接口（自动化测试截图使用）
-window.__pelican = {
-  pelican,
-  bike,
-  view(dx, dy, dz, fov = 35, lx = 0, ly = 0, lz = 0) {
-    setCamMode('orbit', true);
-    controls.autoRotate = false;
-    S.lastOrbitInput = 1e9;
-    orbitCam.position.set(focus.x + dx, focus.y + dy, focus.z + dz);
-    controls.target.set(focus.x + lx, focus.y + ly, focus.z + lz);
-    orbitCam.fov = fov;
-    orbitCam.updateProjectionMatrix();
-    controls.update();
-  },
-  S,
-  settings,
-  setCamMode,
-  jump,
-  trick,
-  honk,
-  ringBell,
-  spawnFish,
-  launchJumper,
-  cine,
-  renderer,
-  get fps() {
-    return fpsVal;
-  },
-};

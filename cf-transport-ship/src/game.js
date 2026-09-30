@@ -77,8 +77,6 @@ export class Game {
     this.last = performance.now();
     this.loop = this.loop.bind(this);
     requestAnimationFrame(this.loop);
-    if (this.qs.has('autostart')) setTimeout(() => this.startMatch(), 300);
-    window.__game = this;
   }
   lampLights() {
     // 管道内的少量真实点光源
@@ -205,7 +203,7 @@ export class Game {
     }
   }
   lock() {
-    if (this.touchMode || this.qs.has('nolock')) {
+    if (this.touchMode) {
       this.locked = true;
       // 手机：进入全屏后尝试锁定横屏（iOS 不支持会静默失败，由竖屏提示遮罩兜底）
       const el = document.documentElement;
@@ -235,7 +233,7 @@ export class Game {
     document.body.classList.toggle('lk', this.locked);
     if (this.locked) {
       if (this.paused) this.resume(true);
-    } else if (this.playing && !this.ended && !this.inLoadout && !this.qs.has('nolock')) {
+    } else if (this.playing && !this.ended && !this.inLoadout) {
       this.pause();
     }
   }
@@ -595,11 +593,6 @@ export class Game {
       cam.fov = 60; cam.updateProjectionMatrix();
     }
     this.renderFrame(dt);
-  }
-  // 调试：无渲染快进
-  fastForward(seconds, step = 1 / 30) {
-    for (let t = 0; t < seconds && this.playing; t += step) this.simulate(step);
-    return { score: this.score, time: this.time.toFixed(1), kills: this.actors.map((a) => a.name + ':' + a.stats.k + '/' + a.stats.d).join(' ') };
   }
   simulate(dt) {
     const cam = this.renderer.camera;
