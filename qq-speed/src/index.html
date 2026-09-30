@@ -87,10 +87,13 @@ canvas#gl{position:fixed;inset:0;width:100%;height:100%;display:block}
 #touch .tb.on{background:rgba(39,199,255,.5)}
 #t-left{left:24px;bottom:34px}#t-right{left:112px;bottom:34px}
 #touch #t-drift{right:28px;bottom:120px;width:86px;height:86px}#touch #t-nitro{right:124px;bottom:40px}#touch #t-boost{right:124px;bottom:132px}#touch #t-brake{left:68px;bottom:122px;width:58px;height:58px}#touch #t-reset{left:8px;bottom:124px;width:58px;height:58px;font-size:13px}#touch #t-swap{right:220px;bottom:40px;width:58px;height:58px}
-body.touch #speedo{bottom:auto;top:236px;width:150px;height:150px;right:12px}
-body.touch #speedo .v{top:56px;font-size:34px}body.touch #speedo .u{top:96px}
+#touch #t-pause{left:calc(50% - 22px);top:100px;width:44px;height:44px;font-size:13px}
+body.touch #speedo{top:auto;bottom:100px;left:50%;right:auto;transform:translateX(-50%);width:72px;height:72px}
+body.touch #speedo .v{top:26px;font-size:21px}body.touch #speedo .u{top:46px;font-size:8px}
 body.touch #keys,body.touch #bigrank{display:none}
-body.touch #gauge{width:180px}
+body.touch #gaugebox{bottom:2px;gap:6px;padding:2px 8px}
+body.touch #gauge{width:clamp(70px,20vw,180px);height:12px}
+body.touch #gaugebox .n2o{width:24px;height:24px;font-size:9px}
 
 #clinks{position:fixed;top:236px;right:16px;z-index:30;display:flex;gap:8px}
 body.touch #clinks{top:16px;right:238px}
@@ -208,7 +211,7 @@ table.res td.pos{font-family:var(--num);font-style:italic;color:var(--yellow);fo
 @keyframes phoneRot{0%,25%{transform:rotate(0)}65%,100%{transform:rotate(90deg)}}
 #rotate .t1{font-size:22px;font-weight:800;letter-spacing:6px}
 #rotate .t2{font-size:13px;color:var(--muted);letter-spacing:1px}
-@media (orientation: portrait) and (pointer: coarse){body.playing #rotate{display:flex}}
+@media (orientation: portrait){body.touch.playing #rotate{display:flex}}
 </style>
 </head>
 <body>
@@ -251,6 +254,7 @@ table.res td.pos{font-family:var(--num);font-style:italic;color:var(--yellow);fo
   </div>
 </div>
 <div id="touch" class="hidden">
+  <button type="button" class="tb" id="t-pause" aria-label="暂停比赛">暂停</button>
   <div class="tb" id="t-left">◀</div><div class="tb" id="t-right">▶</div><div class="tb" id="t-brake">刹</div><div class="tb" id="t-reset">复位</div>
   <div class="tb" id="t-drift">漂移</div><div class="tb" id="t-nitro">氮气</div><div class="tb" id="t-boost">小喷</div><div class="tb" id="t-swap">换位</div>
 </div>

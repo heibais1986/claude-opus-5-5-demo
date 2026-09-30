@@ -125,6 +125,7 @@ export class Game {
 
   // ================= 流程 =================
   startMatch() {
+    if (this.touchMode) this.touch.resetInput();
     const o = this.opts;
     audio.init(); audio.setVolumes({ master: o.vol }); audio.startAmbient(); audio.playUI('start');
     for (const a of this.actors) this.renderer.scene.remove(a.soldier.root);
@@ -238,6 +239,7 @@ export class Game {
     }
   }
   pause() {
+    if (this.touchMode) this.touch.resetInput();
     this.paused = true; this.hud.show('pause');
     this.hud.scoreboard(false);
   }
@@ -246,6 +248,7 @@ export class Game {
     if (!fromLock) this.lock();
   }
   quitToMenu() {
+    if (this.touchMode) this.touch.resetInput();
     this.playing = false; this.paused = false; this.ended = true;
     document.body.classList.remove('playing');
     audio.stopAmbient(); audio.setLowHealth(false);
@@ -260,6 +263,7 @@ export class Game {
   toggleLoadout() {
     if (!this.playing) return;
     if (this.inLoadout) { this.closeLoadout(); return; }
+    if (this.touchMode) this.touch.resetInput();
     this.inLoadout = true; this.hud.show('loadout');
     for (const x of document.querySelectorAll('#loadCards .card')) x.classList.toggle('on', x.dataset.w === (this.player.nextPrimary || this.player.primary));
     if (document.pointerLockElement) document.exitPointerLock();
@@ -287,6 +291,7 @@ export class Game {
     if (k === 'team' && this.vm) this.vm.setTeam(v);
   }
   endMatch() {
+    if (this.touchMode) this.touch.resetInput();
     this.ended = true; this.playing = false;
     const my = this.player.team, other = my === 'BL' ? 'GR' : 'BL';
     const win = this.score[my] === this.score[other] ? null : this.score[my] > this.score[other];

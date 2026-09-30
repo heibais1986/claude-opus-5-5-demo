@@ -6,65 +6,79 @@ export class Input {
   constructor() {
     this.down = new Set();
     this.pressed = new Set();
-    this.touch = { up: false, down: false, left: false, right: false, shift: false };
-    this.touchPressed = new Set();
+    this.touchButtons = new Map();
     this.onKey = null; // 非驾驶类按键回调（暂停、视角等）
     window.addEventListener('keydown', (e) => {
       if (PREVENT.has(e.code)) e.preventDefault();
       if (e.ctrlKey && (e.code === 'KeyW' || e.code === 'KeyR')) e.preventDefault();
+      this.down.add(e.code);
       if (!e.repeat) {
         this.pressed.add(e.code);
         if (this.onKey) this.onKey(e.code, e);
       }
-      this.down.add(e.code);
     }, { passive: false });
     window.addEventListener('keyup', (e) => {
       if (PREVENT.has(e.code)) e.preventDefault();
       this.down.delete(e.code);
     });
-    window.addEventListener('blur', () => this.down.clear());
+    window.addEventListener('blur', () => this.reset());
+    document.addEventListener('visibilitychange', () => { if (document.hidden) this.reset(); });
   }
 
   has(...codes) { return codes.some((c) => this.down.has(c)); }
-  was(...codes) { return codes.some((c) => this.pressed.has(c) || this.touchPressed.has(c)); }
+  was(...codes) { return codes.some((c) => this.pressed.has(c)); }
+  hasTouch(key) {
+    for (const button of this.touchButtons.values()) {
+      if (button.key === key && button.touches.size) return true;
+    }
+    return false;
+  }
 
-  // 每帧生成一次驾驶输入（边沿触发量只在本帧有效）
+  // 渲染帧只采样；边沿事件由游戏在实际消费后清除，避免高刷新率下丢键。
   frame() {
-    const t = this.touch;
-    const inp = {
-      up: this.has('ArrowUp') || t.up,
-      down: this.has('ArrowDown') || t.down,
-      left: this.has('ArrowLeft') || t.left,
-      right: this.has('ArrowRight') || t.right,
-      shift: this.has('ShiftLeft', 'ShiftRight') || t.shift,
+    return {
+      up: this.has('ArrowUp'),
+      down: this.has('ArrowDown') || this.hasTouch('down'),
+      left: this.has('ArrowLeft') || this.hasTouch('left'),
+      right: this.has('ArrowRight') || this.hasTouch('right'),
+      shift: this.has('ShiftLeft', 'ShiftRight') || this.hasTouch('shift'),
       upPressed: this.was('ArrowUp', 'TouchBoost'),
       wPressed: this.was('KeyW'),
       nitroPressed: this.was('ControlLeft', 'ControlRight', 'Space', 'TouchNitro'),
       swapPressed: this.was('AltLeft', 'AltRight', 'TouchSwap'),
       resetPressed: this.was('KeyR', 'TouchReset'),
     };
-    this.pressed.clear();
-    this.touchPressed.clear();
-    return inp;
   }
 
-  // 触屏按钮
+  clearPressed() { this.pressed.clear(); }
+
+  reset() {
+    this.down.clear();
+    this.clearPressed();
+    for (const [el, button] of this.touchButtons) {
+      button.touches.clear();
+      el.classList.remove('on');
+    }
+  }
+
   bindTouch(root) {
     const btn = (sel, key, edge) => {
       const el = root.querySelector(sel);
-      if (!el) return;
-      const on = (e) => {
+      const touches = new Set();
+      this.touchButtons.set(el, { key, touches });
+      el.addEventListener('touchstart', (e) => {
         e.preventDefault();
-        el.classList.add('on');
-        if (key) this.touch[key] = true;
-        if (edge) this.touchPressed.add(edge);
-      };
+        const wasDown = touches.size > 0;
+        for (const t of e.changedTouches) touches.add(t.identifier);
+        el.classList.toggle('on', touches.size > 0);
+        if (!wasDown && edge) this.pressed.add(edge);
+      }, { passive: false });
       const off = (e) => {
         e.preventDefault();
-        el.classList.remove('on');
-        if (key) this.touch[key] = false;
+        for (const t of e.changedTouches) touches.delete(t.identifier);
+        el.classList.toggle('on', touches.size > 0);
+        if (e.type === 'touchcancel' && !touches.size && edge) this.pressed.delete(edge);
       };
-      el.addEventListener('touchstart', on, { passive: false });
       el.addEventListener('touchend', off, { passive: false });
       el.addEventListener('touchcancel', off, { passive: false });
     };

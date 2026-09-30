@@ -123,9 +123,11 @@ class Game {
       this.input.bindTouch($('touch'));
       // 手机竖屏时自动暂停，转回横屏后点「继续比赛」
       const ori = matchMedia('(orientation: portrait)');
-      const onOri = (e) => { if (e.matches && (this.state === 'race' || this.state === 'countdown')) this.togglePause(); };
+      const onOri = () => this.pauseForPortrait();
       if (ori.addEventListener) ori.addEventListener('change', onOri);
       else if (ori.addListener) ori.addListener(onOri);
+      window.addEventListener('blur', () => this.pause());
+      document.addEventListener('visibilitychange', () => { if (document.hidden) this.pause(); });
     }
     this.setupQuality();
     this.buildMenu();
@@ -244,6 +246,7 @@ class Game {
     bind('skins', (i) => { S.skin = i; if (this.state === 'menu') this.startDemo(); });
     $('start').addEventListener('click', () => this.startRace());
     $('resume').addEventListener('click', () => this.togglePause());
+    $('t-pause').addEventListener('click', () => this.pause());
     $('restart').addEventListener('click', () => { $('pause').classList.add('hidden'); this.startRace(); });
     $('quit').addEventListener('click', () => this.toMenu());
     $('again').addEventListener('click', () => this.startRace());
@@ -252,6 +255,7 @@ class Game {
   }
 
   toMenu() {
+    this.input.reset();
     document.body.classList.remove('playing');
     ['pause', 'result'].forEach((i) => $(i).classList.add('hidden'));
     $('menu').classList.remove('hidden');
@@ -273,37 +277,43 @@ class Game {
     } else if (code === 'Enter' && this.state === 'menu' && !$('menu').classList.contains('hidden')) this.startRace();
   }
 
-  togglePause() {
-    if (this.state === 'paused') {
-      this.state = this.pausedFrom;
-      $('pause').classList.add('hidden');
-      this.last = performance.now();
-      this.lockLandscape();
-    } else {
-      this.pausedFrom = this.state;
-      this.state = 'paused';
-      $('pause').classList.remove('hidden');
-      this.audio.silence();
-    }
+  pause() {
+    if (this.state !== 'race' && this.state !== 'countdown') return;
+    this.pausedFrom = this.state;
+    this.state = 'paused';
+    this.input.reset();
+    $('pause').classList.remove('hidden');
+    this.audio.silence();
   }
 
-  // 手机：进入全屏后尝试锁定横屏（iOS 不支持会静默失败，由竖屏提示遮罩兜底）
-  lockLandscape() {
+  isPortrait() { return IS_TOUCH && matchMedia('(orientation: portrait)').matches; }
+
+  pauseForPortrait() { if (this.isPortrait()) this.pause(); }
+
+  togglePause() {
+    if (this.state !== 'paused') {
+      this.pause();
+      return;
+    }
+    this.lockLandscape();
+    // 全屏/锁屏只是体验增强；是否能继续比赛取决于真实视口方向。
+    if (this.isPortrait()) return;
+    this.input.reset();
+    this.state = this.pausedFrom;
+    $('pause').classList.add('hidden');
+    this.last = performance.now();
+  }
+
+  async lockLandscape() {
     if (!IS_TOUCH) return;
     const el = document.documentElement;
+    const fs = el.requestFullscreen || el.webkitRequestFullscreen;
     try {
-      const fs = el.requestFullscreen || el.webkitRequestFullscreen;
-      if (fs && !document.fullscreenElement && !document.webkitFullscreenElement) {
-        const p = fs.call(el);
-        if (p && p.then) p.then(() => this.lockOrientation()).catch(() => {});
-      } else this.lockOrientation();
-    } catch { /* 忽略 */ }
-  }
-  lockOrientation() {
-    try {
-      const p = screen.orientation && screen.orientation.lock ? screen.orientation.lock('landscape') : null;
-      if (p && p.catch) p.catch(() => { /* 忽略 */ });
-    } catch { /* 忽略 */ }
+      if (fs && !document.fullscreenElement && !document.webkitFullscreenElement) await fs.call(el);
+      if (screen.orientation?.lock) await screen.orientation.lock('landscape');
+    } catch (error) {
+      console.warn('无法启用全屏横屏，请手动旋转手机后继续比赛。', error);
+    }
   }
 
   // ---------- 关卡 ----------
@@ -461,6 +471,8 @@ class Game {
 
   startRace() {
     if (this.loading) return;
+    this.input.reset();
+    this.acc = 0;
     this.audio.init();
     this.lockLandscape();
     document.body.classList.add('playing');
@@ -490,6 +502,7 @@ class Game {
     $('keys').classList.remove('hidden');
     clearTimeout(this.keysT);
     this.keysT = setTimeout(() => $('keys').classList.add('hidden'), 18000);
+    this.pauseForPortrait();
   }
 
   // ---------- 主循环 ----------
@@ -501,6 +514,7 @@ class Game {
     this.time += dt;
     const inp = this.input.frame();
     if (this.state !== 'paused') this.step(dt, inp);
+    else this.input.clearPressed();
     this.render(dt);
   }
 
@@ -538,17 +552,9 @@ class Game {
 
     const P = this.player;
     // 玩家输入：完赛后自动驾驶
-    let pin = inp;
-    if (P) {
-      if (P.finished || this.resultShown) pin = this.autopilot(P);
-      else if (IS_TOUCH && racing) { this.input.touch.up = true; }
-      if (IS_TOUCH && !racing) this.input.touch.up = false;
-      if (inp.resetPressed && racing && !P.finished) this.resetPlayer();
-      if (this.itemMode && racing && !P.finished) {
-        if (inp.nitroPressed) this.items.use(P);
-        if (inp.swapPressed) this.items.swap(P);
-      }
-    }
+    const pin = P && (P.finished || this.resultShown)
+      ? this.autopilot(P)
+      : { ...inp, up: inp.up || (IS_TOUCH && racing) };
     const active = st === 'race' || st === 'finish';
     const aiActive = st === 'race' || st === 'menu' || st === 'finish';
     // 固定步长
@@ -557,11 +563,19 @@ class Game {
     const noEdge = { ...pin, upPressed: false, wPressed: false, nitroPressed: false };
     while (this.acc >= DT) {
       this.acc -= DT;
+      if (first && P && racing && !P.finished) {
+        if (inp.resetPressed) this.resetPlayer();
+        if (this.itemMode) {
+          if (inp.nitroPressed) this.items.use(P);
+          if (inp.swapPressed) this.items.swap(P);
+        }
+      }
       if (P) P.update(DT, first ? pin : noEdge, active, this.itemMode);
       first = false;
       for (const r of this.racers) if (!r.isPlayer) r.update(DT, aiActive, this.raceTime, this.rubber(r));
       this.collide();
     }
+    if (!first || !racing) this.input.clearPressed();
     for (const r of this.racers) {
       r.syncModel(dt);
       this.updateProgress(r);
