@@ -1120,6 +1120,9 @@ export class AudioSystem {
 
   update(dt) {
     if (!this._ok()) return;
+    // 系统可能中途挂起上下文（切后台、来电、iOS 中断），不恢复则本局彻底无声
+    this._resumeT = (this._resumeT || 0) - dt;
+    if (this._resumeT <= 0) { this._resumeT = 0.5; this._resume(); }
     this._tick();
   }
 

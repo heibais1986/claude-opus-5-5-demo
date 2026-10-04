@@ -22,7 +22,7 @@ const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _d = new THREE.Vector
 
 export class Game {
   constructor() {
-    this.time = 0; this.frame = 0;
+    this.time = 0; this.frame = 0; this.matchId = 0;
     this.playing = false; this.paused = false; this.locked = false;
     this.actors = []; this.nades = []; this.timers = []; this.tags = [];
     this.score = { BL: 0, GR: 0 };
@@ -127,6 +127,7 @@ export class Game {
   startMatch() {
     if (this.touchMode) this.touch.resetInput();
     const o = this.opts;
+    this.matchId++;
     audio.init(); audio.setVolumes({ master: o.vol }); audio.startAmbient(); audio.playUI('start');
     for (const a of this.actors) this.renderer.scene.remove(a.soldier.root);
     for (const t of this.tags) this.renderer.scene.remove(t.sprite);
@@ -161,7 +162,7 @@ export class Game {
     for (const a of this.actors) this.spawnActor(a, true);
     this.vm.setTeam(my); this.vm.equip(this.player.weapon.id, 0.6);
     this.hud.slots(this.player.inv, 0);
-    this.playing = true; this.paused = false; this.ended = false;
+    this.playing = true; this.paused = false; this.ended = false; this.inLoadout = false;
     document.body.classList.add('playing');
     this.hud.show(null);
     this.lock();
@@ -249,7 +250,7 @@ export class Game {
   }
   quitToMenu() {
     if (this.touchMode) this.touch.resetInput();
-    this.playing = false; this.paused = false; this.ended = true;
+    this.playing = false; this.paused = false; this.ended = true; this.inLoadout = false;
     document.body.classList.remove('playing');
     audio.stopAmbient(); audio.setLowHealth(false);
     for (const a of this.actors) this.renderer.scene.remove(a.soldier.root);
@@ -292,7 +293,7 @@ export class Game {
   }
   endMatch() {
     if (this.touchMode) this.touch.resetInput();
-    this.ended = true; this.playing = false;
+    this.ended = true; this.playing = false; this.inLoadout = false;
     const my = this.player.team, other = my === 'BL' ? 'GR' : 'BL';
     const win = this.score[my] === this.score[other] ? null : this.score[my] > this.score[other];
     this.hud.endScreen(win, this.score, this.actors, this.player.id);
@@ -549,7 +550,11 @@ export class Game {
       this.killedBy = att && att !== v ? `被 <span style="color:${att.team === 'BL' ? '#ff9b70' : '#8cc8ff'}">${att.name}</span> 用 ${wn}${hs ? ' <span style="color:#ff5040">爆头</span>' : ''}击杀` : '你阵亡了';
     }
     this.fx.bloodSplat(v.pos);
-    if (this.score.BL >= this.goal || this.score.GR >= this.goal) setTimeout(() => { if (this.playing) this.endMatch(); }, 1200);
+    if (this.score.BL >= this.goal || this.score.GR >= this.goal) {
+      // 结算延迟内玩家可能已重开一局，用局号守卫避免把新局判成平局
+      const id = this.matchId;
+      setTimeout(() => { if (this.playing && this.matchId === id) this.endMatch(); }, 1200);
+    }
   }
 
   // ================= 事件音效 =================

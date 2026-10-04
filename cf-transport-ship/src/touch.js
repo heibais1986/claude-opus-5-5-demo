@@ -55,7 +55,12 @@ export class TouchControls {
       root.appendChild(b);
       this.btns[key] = b;
     }
-    this.layout = this.readLayout();
+    // 存档损坏时必须回落到默认布局，否则构造函数抛错会让整个游戏主循环无法启动
+    try { this.layout = this.readLayout(); } catch (error) {
+      this.layout = {};
+      try { localStorage.removeItem(STORE); } catch (e) { /* 忽略 */ }
+      console.error('按键布局读取失败，已回退到默认布局', error);
+    }
     this.buildEditBar(root);
 
     // 按键只登记触点；位移与释放统一处理，主开火不会再叠加一份 look。

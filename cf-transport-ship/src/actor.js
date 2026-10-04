@@ -131,6 +131,8 @@ export class Actor {
       const tgt = this.inv[inp.sw];
       if (!(tgt.def.type === 'grenade' && tgt.mag <= 0)) {
         this.weapon.reloadUntil = 0;
+        // 切枪即取消未完成的投雷/自动回枪，否则会残留一个永不自愈的时间戳
+        this.pendingThrow = 0; this.autoSwitchAt = 0;
         this.lastSlot = this.slot; this.slot = inp.sw;
         this.readyAt = now + tgt.def.draw;
         this.scoped = 0; this.scopeReady = false;
@@ -144,9 +146,9 @@ export class Actor {
       if (now - w.lastShot > 60 / d.rpm * 1.2) w.spreadAcc *= Math.exp(-d.spread.recover * dt);
       if (now - w.lastShot > 0.28) w.shotsFired = 0;
     }
-    // 后坐恢复
-    if (d.recoil && now - w.lastShot > 60 / d.rpm + 0.05) {
-      const k = Math.exp(-d.recoil.recover * dt);
+    // 后坐恢复（刀/手雷没有后坐参数，但仍要把上一次的枪口偏移收回来）
+    if (now - w.lastShot > (d.recoil ? 60 / d.rpm + 0.05 : 0.15)) {
+      const k = Math.exp(-(d.recoil ? d.recoil.recover : 6.5) * dt);
       this.punchP *= k; this.punchY *= k;
     }
     this.aimPunch *= Math.exp(-dt * 10);

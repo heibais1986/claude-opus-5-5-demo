@@ -112,7 +112,9 @@ export class ViewModel {
     const mz = this.parts.muzzle;
     if (mz) { mz.add(this.flash); }
     this.drawT = 0; this.drawDur = drawTime || 0.5;
+    // 模型是缓存复用的：上一次换弹/拔销被打断会把弹匣、插销留在隐藏状态
     this.anim = null;
+    this.resetParts();
     this.kick = this.kickV = this.kickRot = this.kickRotV = 0;
   }
   fire() {
