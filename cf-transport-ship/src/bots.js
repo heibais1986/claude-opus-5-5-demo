@@ -40,6 +40,7 @@ export class Bot extends Actor {
   }
   onSpawn() {
     this.path = null; this.goal = null; this.target = null; this.visible = false; this.lastSeen = null;
+    this.nadePlan = null;
     const r = Math.random();
     this.role = this.primary === 'awm' ? 'hold' : r < 0.25 ? 'flank' : 'rush';
     this.lane = LANES[(Math.random() * 3) | 0];
@@ -178,13 +179,13 @@ export class Bot extends Actor {
     // 手雷投掷流程
     if (this.nadePlan) {
       if (this.slot !== 3) sw = 3;
-      else if (now >= this.readyAt && !this.pendingThrow) {
+      else if (now >= this.readyAt && this.pendingThrow <= 0) {
         const d = this.nadePlan.distanceTo(this.pos);
         this.lookYaw = Math.atan2(-(this.nadePlan.x - this.pos.x), -(this.nadePlan.z - this.pos.z));
         this.lookPitch = 0.25 + d * 0.012;
         firePressed = true; this.nadePlan = null;
       }
-    } else if (this.slot === 3 && this.inv[3].mag <= 0 && !this.pendingThrow && !this.autoSwitchAt) sw = 0;
+    } else if (this.slot === 3 && this.inv[3].mag <= 0 && this.pendingThrow <= 0 && !this.autoSwitchAt) sw = 0;
     // 瞄准
     let dYaw = this.yaw, dPitch = this.pitch;
     const tgt = this.target;

@@ -52,6 +52,7 @@ export class Actor {
     this.soldier.root.visible = !this.isPlayer;
     this.scoped = 0; this.scopeReady = false;
     this.streak = 0;
+    this.pendingThrow = 0; this.autoSwitchAt = 0;
   }
   // wish: 世界坐标系下的期望移动方向（长度 0..1）
   move(dt, wishX, wishZ, jump, crouch, walk) {
@@ -177,6 +178,7 @@ export class Actor {
         if (this.pendingThrow <= 0) {
           g.throwGrenade(this);
           w.mag = 0;
+          this.pendingThrow = 0;
           this.readyAt = now + 0.4;
           this.autoSwitchAt = now + 0.45;
         }
