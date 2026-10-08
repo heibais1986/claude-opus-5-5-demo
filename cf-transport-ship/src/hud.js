@@ -43,6 +43,7 @@ export class HUD {
     for (const s of this.root.querySelectorAll('.seg[data-k="tod"]'))
       s.innerHTML = def.tod.map((t) => `<button data-v="${t.v}">${t.label}</button>`).join('');
     $('#menuTitle').textContent = def.name;
+    document.title = `${def.name} · 穿越火线 3D`;
     $('#menuEn').textContent = def.en;
     $('#menuStory').innerHTML = def.story;
     $('#loadTitle').textContent = def.name.replace(/(.)/g, '$1 ').trim();
