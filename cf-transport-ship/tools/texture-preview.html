@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>程序化纹理预览</title>
+<style>
+  body { background: #14161a; color: #d8d5cc; font: 13px/1.5 system-ui, sans-serif; margin: 24px; }
+  h2 { font-size: 15px; margin: 22px 0 8px; color: #f0b93a; }
+  .row { display: flex; flex-wrap: wrap; gap: 14px; }
+  figure { margin: 0; }
+  figcaption { font-size: 12px; opacity: .75; margin-top: 4px; }
+  canvas { border: 1px solid #2c2f36; image-rendering: pixelated; }
+  #stats { white-space: pre; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "../node_modules/three/build/three.module.js" } }
+</script>
+</head>
+<body>
+<div id="msg">生成中…</div>
+<div id="out"></div>
+<h2>统计</h2>
+<div id="stats"></div>
+<script type="module">
+import { buildTextures } from '../src/textures.js';
+
+const groups = (new URLSearchParams(location.search).get('g') || 'desert,ship').split(',');
+const SIZE = 256;
+const out = document.getElementById('out');
+const stats = [];
+
+function stat(label, src, tiled) {
+  const c = document.createElement('canvas');
+  c.width = tiled ? SIZE * 2 : SIZE; c.height = tiled ? SIZE * 2 : SIZE;
+  const x = c.getContext('2d', { willReadFrequently: true });
+  x.fillStyle = '#000'; x.fillRect(0, 0, c.width, c.height);
+  x.drawImage(src, 0, 0, c.width, c.height);
+  const d = x.getImageData(0, 0, c.width, c.height).data;
+  let n = 0, sum = 0, dark = 0, transparent = 0;
+  const acc = [0, 0, 0];
+  for (let i = 0; i < d.length; i += 4) {
+    acc[0] += d[i]; acc[1] += d[i + 1]; acc[2] += d[i + 2];
+    const l = (d[i] + d[i + 1] + d[i + 2]) / 3;
+    sum += l; n++; if (l < 12) dark++; if (d[i + 3] < 200) transparent++;
+  }
+  const mean = [0, 1, 2].map((k) => Math.round(acc[k] / n));
+  const lum = Math.round(sum / n);
+  stats.push(`${label.padEnd(26)} 亮度 ${String(lum).padStart(3)} RGB ${mean.join(',')} 暗像素 ${(100 * dark / n).toFixed(1)}% 透明 ${(100 * transparent / n).toFixed(1)}%`);
+  const f = document.createElement('figure');
+  f.appendChild(c);
+  const cap = document.createElement('figcaption');
+  cap.textContent = label + (tiled ? '（2×2 无缝检查）' : '');
+  f.appendChild(cap);
+  out.appendChild(f);
+  return c;
+}
+
+const T = buildTextures('high', groups);
+for (const g of groups) {
+  const set = T[g] || (g === 'ship' ? T : null);
+  if (!set) continue;
+  const wrap = document.createElement('div');
+  wrap.innerHTML = `<h2>${g}</h2>`;
+  out.appendChild(wrap);
+  for (const k in set) {
+    const v = set[k];
+    const pick = (o, tag) => {
+      if (o && o.image && o.image.width) { stat(`${tag}.${k}`, o.image, false); return; }
+      for (const key of ['map', 'normalMap', 'roughnessMap', 'emissiveMap', 'side20', 'side40', 'door', 'roof', 'n20', 'n40', 'doorN', 'roofN']) { const src = o && o[key]; const img = src && (src.image || src); if (img && img.width) stat(`${tag}.${k}.${key}`, img, key === 'map'); }
+    };
+    if (Array.isArray(v)) v.forEach((o, i) => pick(o, g + '.' + k + i)); else if (v && typeof v === 'object') pick(v, g);
+  }
+}
+document.getElementById('stats').textContent = stats.join('\n');
+document.getElementById('msg').textContent = `完成：${stats.length} 张贴片`;
+</script>
+</body>
+</html>

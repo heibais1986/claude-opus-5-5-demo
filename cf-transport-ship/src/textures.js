@@ -696,49 +696,231 @@ export const SIGN_UV = {
   arrow: [512, 256, 256, 256], yline: [800, 256, 160, 256],
 };
 
-// ============== 汇总 ==============
-export function buildTextures(quality = 'high') {
-  const T = {};
-  T.deck = deckTextures();
+// ============== 沙漠 / de_dust2 ==============
+// 沙地：1024px 铺 5m，含风成涟漪、碎石与浮尘
+function sandTextures(seed = 900) {
+  const S = 1024, rnd = mulberry32(seed), TAU = Math.PI * 2;
+  const fine = fbm(S, S, 24, 24, 4, seed);
+  const coarse = fbm(S, S, 3, 3, 5, seed + 1);
+  const hgt = new Float32Array(S * S), rgh = new Float32Array(S * S);
+  const c = mkCanvas(S, S), ctx = c.getContext('2d', { willReadFrequently: true });
+  const img = ctx.createImageData(S, S), d = img.data;
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const i = y * S + x;
+    // 涟漪用整周期正弦，保证四方连续
+    const rip = 0.5 + 0.36 * Math.sin((x / S) * TAU * 16 + coarse[i] * 7) + 0.14 * Math.sin((y / S) * TAU * 7 + coarse[i] * 5);
+    hgt[i] = rip * 0.3 + fine[i] * 0.34 + coarse[i] * 0.42;
+    const k = 0.82 + hgt[i] * 0.32;
+    d[i * 4] = 205 * k; d[i * 4 + 1] = 180 * k; d[i * 4 + 2] = 136 * k; d[i * 4 + 3] = 255;
+    rgh[i] = 0.88 + fine[i] * 0.12;
+  }
+  ctx.putImageData(img, 0, 0);
+  for (let i = 0; i < 1400; i++) {
+    const x = rnd() * S, y = rnd() * S, r = 0.8 + rnd() * 2.4;
+    ctx.fillStyle = `rgba(${120 + rnd() * 60 | 0},${105 + rnd() * 50 | 0},${80 + rnd() * 40 | 0},${0.2 + rnd() * 0.3})`;
+    ctx.beginPath(); ctx.ellipse(x, y, r, r * 0.7, rnd() * 3, 0, 7); ctx.fill();
+  }
+  blobs(ctx, rnd, S, S, 26, 20, 90, '150,128,96', 0.06, 0.16);
+  return {
+    map: tex(c),
+    normalMap: tex(normalFromHeight(hgt, S, S, 1.6), { srgb: false }),
+    roughnessMap: tex(grayCanvas(rgh, S, S, (v) => v), { srgb: false }),
+  };
+}
 
-  // 集装箱（侧面法线在同长度间共享）
-  const h20 = corrugationHeight(1024, 448, 22, 0.07, 0.03);
-  const h40 = corrugationHeight(2048, 448, 44, 0.07, 0.015);
-  const n20 = tex(normalFromHeight(h20, 1024, 448, 3.2), { srgb: false });
-  const n40 = tex(normalFromHeight(h40, 2048, 448, 3.2), { srgb: false });
-  const roof = containerRoof(1024, 256, 900);
-  const roofN = tex(normalFromHeight(roof.hgt, 1024, 256, 2), { srgb: false });
-  const roofMap = tex(roof.map);
-  T.containers = CONTAINER_COLORS.map((col, i) => {
-    const s20 = containerSide(col, 1024, 448, 22, 200 + i, h20);
-    const s40 = containerSide(col, 2048, 448, 44, 300 + i, h40);
-    const door = containerDoor(col, 400 + i);
-    return {
-      color: col,
-      side20: tex(s20), side40: tex(s40), n20, n40,
-      door: tex(door.map), doorN: tex(normalFromHeight(door.hgt, door.W, door.H, 3), { srgb: false }),
-      roof: roofMap, roofN,
-    };
-  });
-  // 木箱与铁箱
-  T.crates = [];
-  for (let i = 0; i < 4; i++) {
-    const w = woodCrate(500 + i, i % 2);
-    T.crates.push({ map: tex(w.map), normalMap: tex(normalFromHeight(w.hgt, 512, 512, 3), { srgb: false }), kind: 'wood' });
+// 沙岩砖墙：错缝砖块 + 底部水渍流挂 + 裂纹
+function adobeWall(seed = 910) {
+  const S = 512, rnd = mulberry32(seed); // 一个单元 3m x 3m
+  const grain = fbm(S, S, 20, 20, 4, seed), patch = fbm(S, S, 4, 4, 5, seed + 3);
+  const hgt = new Float32Array(S * S);
+  const rows = 6, rowH = S / rows, cols = 4, bw = S / cols;
+  const hash = (a, b) => { let h = (a * 374761393 + b * 668265263 + seed * 11) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
+  const c = mkCanvas(S, S), ctx = c.getContext('2d', { willReadFrequently: true });
+  const img = ctx.createImageData(S, S), d = img.data;
+  for (let y = 0; y < S; y++) {
+    const r = Math.floor(y / rowH), ty = (y - r * rowH) / rowH;
+    for (let x = 0; x < S; x++) {
+      const i = y * S + x;
+      const u = (x + (r % 2) * bw / 2) % S;
+      const col = Math.floor(u / bw), tx = (u - col * bw) / bw;
+      const mortar = ty < 0.075 || ty > 0.925 || tx < 0.035 || tx > 0.965;
+      const j = hash(r, col);
+      let hv = mortar ? 0.16 : 0.62 + j * 0.12;
+      if (!mortar && Math.min(tx, 1 - tx, ty, 1 - ty) < 0.05 && hash(r * 7 + col, col * 3 + r) > 0.74) hv = 0.3;
+      hv += grain[i] * 0.12;
+      hgt[i] = hv;
+      const k = (0.72 + hv * 0.42) * (0.86 + j * 0.22) * (0.9 + patch[i] * 0.2);
+      d[i * 4] = 196 * k; d[i * 4 + 1] = 168 * k; d[i * 4 + 2] = 128 * k; d[i * 4 + 3] = 255;
+    }
   }
-  for (let i = 0; i < 2; i++) {
-    const m = metalCrate(600 + i);
-    T.crates.push({ map: tex(m.map), normalMap: tex(normalFromHeight(m.hgt, 512, 512, 3), { srgb: false }), kind: 'metal' });
+  ctx.putImageData(img, 0, 0);
+  const gd = ctx.createLinearGradient(0, S * 0.78, 0, S);
+  gd.addColorStop(0, 'rgba(120,100,70,0)'); gd.addColorStop(1, 'rgba(108,90,62,0.45)');
+  ctx.fillStyle = gd; ctx.fillRect(0, S * 0.78, S, S * 0.22);
+  for (let i = 0; i < 18; i++) {
+    const x = rnd() * S, w = 3 + rnd() * 10, L = S * (0.15 + rnd() * 0.4), y0 = rnd() * S * 0.3;
+    const g2 = ctx.createLinearGradient(0, y0, 0, y0 + L);
+    g2.addColorStop(0, 'rgba(140,118,86,0.28)'); g2.addColorStop(1, 'rgba(140,118,86,0)');
+    ctx.fillStyle = g2; ctx.fillRect(x, y0, w, L);
   }
-  T.hull = hullTexture();
-  T.bulkhead = paintedSteel(700, [168, 172, 170]);
-  T.darkSteel = paintedSteel(701, [70, 76, 80], { rust: 40 });
-  T.yellowSteel = paintedSteel(702, [214, 170, 38], { stiffeners: false, rust: 20 });
-  T.redSteel = paintedSteel(703, [150, 44, 36], { stiffeners: false, rust: 20 });
-  T.greenSteel = paintedSteel(704, [70, 96, 78], { rust: 25 });
-  T.superWall = superWall();
-  T.fence = meshFence();
-  T.grating = grating();
+  ctx.strokeStyle = 'rgba(90,74,52,0.32)'; ctx.lineWidth = 1.4;
+  for (let i = 0; i < 7; i++) {
+    let x = rnd() * S, y = rnd() * S;
+    ctx.beginPath(); ctx.moveTo(x, y);
+    for (let k = 0; k < 8; k++) { x += (rnd() - 0.5) * 26; y += rnd() * 16; ctx.lineTo(x, y); }
+    ctx.stroke();
+  }
+  return { map: tex(c), normalMap: tex(normalFromHeight(hgt, S, S, 2.6), { srgb: false }) };
+}
+
+// 石板：台阶、平台与墙顶压顶石
+function stoneSlabs(seed = 920) {
+  const S = 512, rnd = mulberry32(seed); // 一个单元 2m
+  const grain = fbm(S, S, 24, 24, 4, seed), patch = fbm(S, S, 5, 5, 4, seed + 5);
+  const hgt = new Float32Array(S * S);
+  const cs = S / 2;
+  const c = mkCanvas(S, S), ctx = c.getContext('2d', { willReadFrequently: true });
+  const img = ctx.createImageData(S, S), d = img.data;
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const i = y * S + x;
+    const joint = (x % cs) < 6 || (x % cs) > cs - 6 || (y % cs) < 6 || (y % cs) > cs - 6;
+    const id = Math.floor(x / cs) * 7 + Math.floor(y / cs) * 13;
+    const j = Math.abs(Math.sin(id * 12.9898) * 43758.5453) % 1;
+    const hv = (joint ? 0.15 : 0.6 + j * 0.1) + grain[i] * 0.14;
+    hgt[i] = hv;
+    const k = (0.74 + hv * 0.36) * (0.9 + j * 0.14) * (0.92 + patch[i] * 0.16);
+    d[i * 4] = 174 * k; d[i * 4 + 1] = 168 * k; d[i * 4 + 2] = 154 * k; d[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  blobs(ctx, rnd, S, S, 22, 6, 26, '118,110,96', 0.1, 0.3);
+  return { map: tex(c), normalMap: tex(normalFromHeight(hgt, S, S, 2.2), { srgb: false }) };
+}
+
+// 木箱：竖向板条 + 框架 + 喷涂字样
+function desertCrate(seed = 930) {
+  const S = 512, rnd = mulberry32(seed);
+  const grain = fbm(S, S, 3, 40, 4, seed), n = fbm(S, S, 8, 8, 4, seed + 1);
+  const hgt = new Float32Array(S * S);
+  const frame = 46, planks = 5;
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const inFrame = x < frame || x > S - frame || y < frame || y > S - frame;
+    let hv = inFrame ? 0.88 : 0.5;
+    if (!inFrame) { const py = ((y - frame) / (S - 2 * frame)) * planks; if (py - Math.floor(py) < 0.035) hv = 0.12; }
+    if (inFrame && (Math.abs(x - frame) < 2 || Math.abs(x - (S - frame)) < 2 || Math.abs(y - frame) < 2 || Math.abs(y - (S - frame)) < 2)) hv = 0.2;
+    hgt[y * S + x] = hv + grain[y * S + x] * 0.1;
+  }
+  const c = mkCanvas(S, S), ctx = c.getContext('2d', { willReadFrequently: true });
+  const img = ctx.createImageData(S, S), d = img.data;
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const i = y * S + x;
+    const k = (0.7 + grain[i] * 0.5) * (0.85 + n[i] * 0.25) * (0.55 + hgt[i] * 0.5);
+    d[i * 4] = 178 * k; d[i * 4 + 1] = 143 * k; d[i * 4 + 2] = 96 * k; d[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  weatheredText(ctx, 'SITE A', S / 2, S * 0.44, 'bold 64px "Arial Black", Impact, sans-serif', 'rgba(58,42,26,0.75)', rnd, 0.45);
+  weatheredText(ctx, 'DUST 2', S / 2, S * 0.62, 'bold 40px "Arial Black", Impact, sans-serif', 'rgba(44,38,32,0.6)', rnd, 0.4);
+  ctx.fillStyle = 'rgba(38,32,26,0.85)';
+  for (let k = 0; k < 16; k++) {
+    const t = k / 4 | 0, s = k % 4;
+    const pos = [[frame / 2, frame + s * (S - 2 * frame) / 3], [S - frame / 2, frame + s * (S - 2 * frame) / 3], [frame + s * (S - 2 * frame) / 3, frame / 2], [frame + s * (S - 2 * frame) / 3, S - frame / 2]][t];
+    ctx.beginPath(); ctx.arc(pos[0], pos[1], 3, 0, 7); ctx.fill();
+  }
+  blobs(ctx, rnd, S, S, 14, 12, 60, '196,172,132', 0.12, 0.3);
+  return { map: tex(c), normalMap: tex(normalFromHeight(hgt, S, S, 2.4), { srgb: false }) };
+}
+
+// 中路木门：竖板 + 铁箍 + 门环
+function desertDoor() {
+  const S = 512, rnd = mulberry32(941);
+  const grain = fbm(S, S, 6, 26, 4, 941);
+  const hgt = new Float32Array(S * S);
+  const c = mkCanvas(S, S), ctx = c.getContext('2d', { willReadFrequently: true });
+  const planks = 5, pw = S / planks;
+  const img = ctx.createImageData(S, S), d = img.data;
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const i = y * S + x;
+    const p = Math.floor(x / pw), tx = (x - p * pw) / pw;
+    const gap = tx < 0.04 || tx > 0.96;
+    const tone = 0.82 + ((Math.abs(Math.sin(p * 12.9898) * 43758.5453) % 1) * 0.3);
+    const hv = (gap ? 0.15 : 0.66) + grain[i] * 0.16;
+    hgt[i] = hv;
+    const k = (0.6 + hv * 0.5) * tone;
+    d[i * 4] = 126 * k; d[i * 4 + 1] = 88 * k; d[i * 4 + 2] = 52 * k; d[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  ctx.fillStyle = 'rgba(46,42,40,0.9)';
+  for (const sy of [S * 0.16, S * 0.7]) ctx.fillRect(0, sy, S, 26);
+  ctx.fillStyle = 'rgba(20,18,16,0.9)';
+  for (const sy of [S * 0.16, S * 0.7]) for (let x = 26; x < S; x += 62) {
+    ctx.beginPath(); ctx.arc(x, sy + 13, 5, 0, 7); ctx.fill();
+  }
+  ctx.strokeStyle = 'rgba(30,28,26,0.95)'; ctx.lineWidth = 9;
+  ctx.beginPath(); ctx.arc(S * 0.82, S * 0.45, 26, 0, 7); ctx.stroke();
+  rustStreaks(ctx, S, S, rnd, 16, S * 0.16, 120, 0.3);
+  blobs(ctx, rnd, S, S, 12, 10, 46, '196,172,132', 0.1, 0.26);
+  return { map: tex(c), normalMap: tex(normalFromHeight(hgt, S, S, 2.6), { srgb: false }) };
+}
+
+function desertTextures() {
+  return {
+    sand: sandTextures(),
+    adobe: adobeWall(),
+    stone: stoneSlabs(),
+    crate: desertCrate(),
+    door: desertDoor(),
+    metal: paintedSteel(952, [126, 108, 74], { rust: 55, stiffeners: false }),
+  };
+}
+
+// ============== 汇总 ==============
+// groups：需要的纹理组。'ship' 与 'desert' 互斥，通用特效纹理始终生成。
+export function buildTextures(quality = 'high', groups = ['ship']) {
+  const want = new Set(groups);
+  const T = {};
+  if (want.has('ship')) {
+    T.deck = deckTextures();
+
+    // 集装箱（侧面法线在同长度间共享）
+    const h20 = corrugationHeight(1024, 448, 22, 0.07, 0.03);
+    const h40 = corrugationHeight(2048, 448, 44, 0.07, 0.015);
+    const n20 = tex(normalFromHeight(h20, 1024, 448, 3.2), { srgb: false });
+    const n40 = tex(normalFromHeight(h40, 2048, 448, 3.2), { srgb: false });
+    const roof = containerRoof(1024, 256, 900);
+    const roofN = tex(normalFromHeight(roof.hgt, 1024, 256, 2), { srgb: false });
+    const roofMap = tex(roof.map);
+    T.containers = CONTAINER_COLORS.map((col, i) => {
+      const s20 = containerSide(col, 1024, 448, 22, 200 + i, h20);
+      const s40 = containerSide(col, 2048, 448, 44, 300 + i, h40);
+      const door = containerDoor(col, 400 + i);
+      return {
+        color: col,
+        side20: tex(s20), side40: tex(s40), n20, n40,
+        door: tex(door.map), doorN: tex(normalFromHeight(door.hgt, door.W, door.H, 3), { srgb: false }),
+        roof: roofMap, roofN,
+      };
+    });
+    // 木箱与铁箱
+    T.crates = [];
+    for (let i = 0; i < 4; i++) {
+      const w = woodCrate(500 + i, i % 2);
+      T.crates.push({ map: tex(w.map), normalMap: tex(normalFromHeight(w.hgt, 512, 512, 3), { srgb: false }), kind: 'wood' });
+    }
+    for (let i = 0; i < 2; i++) {
+      const m = metalCrate(600 + i);
+      T.crates.push({ map: tex(m.map), normalMap: tex(normalFromHeight(m.hgt, 512, 512, 3), { srgb: false }), kind: 'metal' });
+    }
+    T.hull = hullTexture();
+    T.bulkhead = paintedSteel(700, [168, 172, 170]);
+    T.darkSteel = paintedSteel(701, [70, 76, 80], { rust: 40 });
+    T.yellowSteel = paintedSteel(702, [214, 170, 38], { stiffeners: false, rust: 20 });
+    T.redSteel = paintedSteel(703, [150, 44, 36], { stiffeners: false, rust: 20 });
+    T.greenSteel = paintedSteel(704, [70, 96, 78], { rust: 25 });
+    T.superWall = superWall();
+    T.fence = meshFence();
+    T.grating = grating();
+    T.signs = signAtlas();
+  }
+  if (want.has('desert')) T.desert = desertTextures();
   T.holeMetal = bulletHole('metal');
   T.holeWood = bulletHole('wood');
   T.scorch = scorch();
@@ -748,6 +930,5 @@ export function buildTextures(quality = 'high') {
   T.puff = softPuff();
   T.glow = glow();
   T.spark = sparkTex();
-  T.signs = signAtlas();
   return T;
 }

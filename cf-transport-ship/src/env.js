@@ -1,20 +1,33 @@
 // 天空 / 云 / 海洋 / 光照
 import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
-import { SEA_Y } from './map.js';
 
+// 预设按 `${地图id}_${时段}` 命名：海面地图用 deep/shallow 描述水体，
+// 陆地地图用 ground 描述环境球下方的地面反照。
 export const PRESETS = {
-  day: {
+  ship_day: {
     elev: 40, azim: 128, turbidity: 3.0, rayleigh: 1.8, mie: 0.0022, mieG: 0.76,
     sunColor: 0xfff0dc, sunInt: 3.6, hemiSky: 0xcfe2f4, hemiGround: 0x4a5560, hemiInt: 0.15, envInt: 0.5,
     exposure: 0.6, fog: 0xa9c2d6, fogDensity: 0.0011,
     deep: 0x03263f, shallow: 0x0f6a78, skyZen: 0x3f78b8, skyHor: 0xbcd3e4, cloudLit: 0xffffff, cloudShade: 0x8d9aa8, cloudCover: 0.47,
   },
-  dusk: {
+  ship_dusk: {
     elev: 6.5, azim: 160, turbidity: 9, rayleigh: 2.6, mie: 0.006, mieG: 0.86,
     sunColor: 0xffa55a, sunInt: 3.0, hemiSky: 0xf0b890, hemiGround: 0x2a2a38, hemiInt: 0.15, envInt: 0.5,
     exposure: 0.7, fog: 0xd49a78, fogDensity: 0.0013,
     deep: 0x0a1c2c, shallow: 0x2a4a58, skyZen: 0x3a4f78, skyHor: 0xf2a070, cloudLit: 0xffc08a, cloudShade: 0x5a4a58, cloudCover: 0.5,
+  },
+  dust2_day: {
+    elev: 56, azim: 96, turbidity: 5.5, rayleigh: 1.1, mie: 0.0085, mieG: 0.8,
+    sunColor: 0xfff3da, sunInt: 4.0, hemiSky: 0xe6d6b6, hemiGround: 0x8f7549, hemiInt: 0.3, envInt: 0.55,
+    exposure: 0.56, fog: 0xd9c69c, fogDensity: 0.0016,
+    ground: 0x6d5f45, skyZen: 0x4f7fc0, skyHor: 0xdacbaa, cloudLit: 0xffffff, cloudShade: 0xa89a88, cloudCover: 0.32,
+  },
+  dust2_dusk: {
+    elev: 4.5, azim: 118, turbidity: 8, rayleigh: 2.4, mie: 0.009, mieG: 0.84,
+    sunColor: 0xffae5e, sunInt: 3.1, hemiSky: 0xf0c890, hemiGround: 0x6a4c30, hemiInt: 0.2, envInt: 0.5,
+    exposure: 0.72, fog: 0xcf9d6c, fogDensity: 0.0019,
+    ground: 0x4a3a26, skyZen: 0x404a70, skyHor: 0xf0b070, cloudLit: 0xffb878, cloudShade: 0x6a5048, cloudCover: 0.42,
   },
 };
 
@@ -33,7 +46,7 @@ const WAVES = [
   [0.25, 1.0, 0.07, 11], [-0.5, 0.8, 0.05, 6.5], [0.95, -0.1, 0.05, 4.2],
 ];
 
-function makeOcean(preset) {
+function makeOcean(preset, seaY) {
   // 极坐标网格：中心密、远处疏
   const rings = 110, segs = 160, pos = [], idx = [];
   for (let r = 0; r <= rings; r++) {
@@ -159,7 +172,7 @@ function makeOcean(preset) {
       }`,
   });
   const mesh = new THREE.Mesh(g, mat);
-  mesh.position.y = SEA_Y;
+  mesh.position.y = seaY;
   mesh.frustumCulled = false;
   mesh.renderOrder = -1;
   return mesh;
@@ -206,15 +219,17 @@ function makeClouds(preset) {
 }
 
 export class Environment {
-  constructor(renderer, scene, quality) {
+  constructor(renderer, scene, quality, def = null) {
     this.renderer = renderer; this.scene = scene;
-    this.preset = PRESETS.day;
+    this.def = def || { id: 'ship', sea: true, seaY: -7.5, shadowBox: { x: [-58, 40], y: [-1, 26], z: [-15, 15] } };
+    this.preset = PRESETS.ship_day;
     this.sky = new Sky(); this.sky.scale.setScalar(40000);
     this.sky.material.depthWrite = false;
     this.sky.renderOrder = -3;
     scene.add(this.sky);
     this.clouds = makeClouds(this.preset); scene.add(this.clouds);
-    this.ocean = makeOcean(this.preset); scene.add(this.ocean);
+    this.ocean = this.def.sea ? makeOcean(this.preset, this.def.seaY ?? 0) : null;
+    if (this.ocean) scene.add(this.ocean);
     this.sunDir = new THREE.Vector3();
     this.sun = new THREE.DirectionalLight(0xffffff, 3);
     this.sun.castShadow = true;
@@ -231,10 +246,10 @@ export class Environment {
     this.envRT = null;
     this.shipDist = 0;
     this.shipSpeed = 6.5;
-    this.apply('day');
+    this.apply(this.def.tod ? this.def.tod[0].v : 'day');
   }
   apply(name) {
-    const P = this.preset = PRESETS[name] || PRESETS.day;
+    const P = this.preset = PRESETS[`${this.def.id}_${name}`] || PRESETS[`${this.def.id}_day`] || PRESETS.ship_day;
     const phi = THREE.MathUtils.degToRad(90 - P.elev), theta = THREE.MathUtils.degToRad(P.azim);
     // 方位角从 +X 起逆时针到 +Z
     this.sunDir.set(Math.sin(phi) * Math.cos(theta), Math.cos(phi), Math.sin(phi) * Math.sin(theta)).normalize();
@@ -244,13 +259,14 @@ export class Environment {
     u.sunPosition.value.copy(this.sunDir);
     this.sun.color.set(P.sunColor); this.sun.intensity = P.sunInt;
     this.sun.position.copy(this.sun.target.position).addScaledVector(this.sunDir, 120);
-    // 阴影相机包住整艘可见船体
+    // 阴影相机包住整块可见区域（由地图描述符给出）
     const cam = this.sun.shadow.camera;
+    const sb = this.def.shadowBox;
     const lightM = new THREE.Matrix4().lookAt(this.sun.position, this.sun.target.position, new THREE.Vector3(0, 1, 0));
     const inv = lightM.clone().invert();
     const box = new THREE.Box3();
     const pts = [];
-    for (const x of [-58, 40]) for (const y of [-1, 26]) for (const z of [-15, 15]) pts.push(new THREE.Vector3(x, y, z));
+    for (const x of sb.x) for (const y of sb.y) for (const z of sb.z) pts.push(new THREE.Vector3(x, y, z));
     const lp = new THREE.Vector3();
     for (const p of pts) { lp.copy(p).sub(this.sun.position).applyMatrix4(inv); box.expandByPoint(lp); }
     cam.left = box.min.x; cam.right = box.max.x; cam.bottom = box.min.y; cam.top = box.max.y;
@@ -258,10 +274,12 @@ export class Environment {
     cam.updateProjectionMatrix();
     this.hemi.color.set(P.hemiSky); this.hemi.groundColor.set(P.hemiGround); this.hemi.intensity = P.hemiInt;
     this.scene.fog.color.set(P.fog); this.scene.fog.density = P.fogDensity;
-    const ou = this.ocean.material.uniforms;
-    ou.uSunDir.value.copy(this.sunDir); ou.uSunColor.value.set(P.sunColor).multiplyScalar(P.sunInt / 3);
-    ou.uDeep.value.set(P.deep); ou.uShallow.value.set(P.shallow);
-    ou.uZen.value.set(P.skyZen); ou.uHor.value.set(P.skyHor); ou.uFog.value.set(P.fog); ou.uFogDensity.value = P.fogDensity;
+    if (this.ocean) {
+      const ou = this.ocean.material.uniforms;
+      ou.uSunDir.value.copy(this.sunDir); ou.uSunColor.value.set(P.sunColor).multiplyScalar(P.sunInt / 3);
+      ou.uDeep.value.set(P.deep); ou.uShallow.value.set(P.shallow);
+      ou.uZen.value.set(P.skyZen); ou.uHor.value.set(P.skyHor); ou.uFog.value.set(P.fog); ou.uFogDensity.value = P.fogDensity;
+    }
     const cu = this.clouds.material.uniforms;
     cu.uSunDir.value.copy(this.sunDir); cu.uLit.value.set(P.cloudLit); cu.uShade.value.set(P.cloudShade);
     cu.uCover.value = P.cloudCover; cu.uFog.value.set(P.fog);
@@ -275,9 +293,10 @@ export class Environment {
     for (const k of ['turbidity', 'rayleigh', 'mieCoefficient', 'mieDirectionalG']) u2[k].value = u[k].value;
     u2.sunPosition.value.copy(this.sunDir);
     envScene.add(sky2);
-    // 海面近似：深色大圆盘，使环境光下半球偏暗
-    const disk = new THREE.Mesh(new THREE.CircleGeometry(30000, 32), new THREE.MeshBasicMaterial({ color: new THREE.Color(this.preset.deep).multiplyScalar(2.2) }));
-    disk.rotation.x = -Math.PI / 2; disk.position.y = -50;
+    // 环境球下方的地面 / 海面近似，让下半球反射不至于全黑
+    const gcol = this.preset.ground ?? this.preset.deep;
+    const disk = new THREE.Mesh(new THREE.CircleGeometry(30000, 32), new THREE.MeshBasicMaterial({ color: new THREE.Color(gcol).multiplyScalar(2.2) }));
+    disk.rotation.x = -Math.PI / 2; disk.position.y = this.def.sea ? -50 : 0.2;
     envScene.add(disk);
     if (this.envRT) this.envRT.dispose();
     this.envRT = this.pmrem.fromScene(envScene, 0.02, 1, 60000);
@@ -288,9 +307,11 @@ export class Environment {
   }
   update(dt, t, camPos) {
     this.shipDist += dt * this.shipSpeed;
-    const ou = this.ocean.material.uniforms;
-    ou.uTime.value = t; ou.uShip.value = this.shipDist; ou.uCam.value.copy(camPos);
-    this.ocean.position.x = 0; this.ocean.position.z = 0;
+    if (this.ocean) {
+      const ou = this.ocean.material.uniforms;
+      ou.uTime.value = t; ou.uShip.value = this.shipDist; ou.uCam.value.copy(camPos);
+      this.ocean.position.x = 0; this.ocean.position.z = 0;
+    }
     const cu = this.clouds.material.uniforms;
     cu.uTime.value = t; cu.uShip.value = this.shipDist;
   }

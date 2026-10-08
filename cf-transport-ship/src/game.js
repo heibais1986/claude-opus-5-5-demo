@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { Renderer } from './render.js';
 import { buildTextures } from './textures.js';
-import { buildMap } from './map.js';
+import { pickMap } from './maps/index.js';
 import { Environment } from './env.js';
 import { World, NavGrid } from './physics.js';
 import { Effects } from './effects.js';
@@ -38,16 +38,17 @@ export class Game {
     await nextFrame();
     this.renderer = new Renderer(document.getElementById('c'), this.opts.quality);
     this.renderer.camera.fov = this.opts.fov;
-    this.hud.loading(0.12, '生成集装箱 / 甲板 / 船体纹理');
+    this.def = pickMap(this.opts.map);
+    this.hud.loading(0.12, `生成${this.def.name}纹理`);
     await nextFrame(); await nextFrame();
-    this.T = buildTextures(this.opts.quality);
-    this.hud.loading(0.55, '搭建运输船');
+    this.T = buildTextures(this.opts.quality, this.def.textures);
+    this.hud.loading(0.55, `搭建${this.def.name}`);
     await nextFrame();
     this.world = new World();
-    this.map = buildMap(this.renderer.scene, this.T, this.world);
-    this.hud.loading(0.68, '天空与海洋');
+    this.map = this.def.build(this.renderer.scene, this.T, this.world);
+    this.hud.loading(0.68, this.def.sea ? '天空与海洋' : '天空与沙地');
     await nextFrame();
-    this.env = new Environment(this.renderer.renderer, this.renderer.scene, this.opts.quality);
+    this.env = new Environment(this.renderer.renderer, this.renderer.scene, this.opts.quality, this.def);
     this.env.extraScenes = [this.renderer.vmScene];
     this.env.apply(this.opts.tod);
     this.fx = new Effects(this.renderer.scene, this.T, this.renderer.camera);
@@ -55,8 +56,9 @@ export class Game {
     this.vm = new ViewModel(this.renderer.vmScene, this.T, this.opts.team);
     this.hud.loading(0.8, '计算寻路网格');
     await nextFrame();
-    this.nav = new NavGrid(this.world, -36.2, -12.1, 36.2, 12.1, 0.5, 0.42);
-    this.hud.buildRadar(this.world);
+    const nv = this.def.nav;
+    this.nav = new NavGrid(this.world, nv.x0, nv.z0, nv.x1, nv.z1, nv.cell, nv.r);
+    this.hud.buildRadar(this.world, this.def);
     this.hud.loading(0.88, '武器图标 / 预编译着色器');
     await nextFrame();
     this.hud.setIcons(this.makeIcons());
@@ -288,7 +290,7 @@ export class Game {
     if (k === 'vol') audio.setVolumes({ master: v });
     if (k === 'fov' && this.renderer) { this.renderer.camera.fov = v; this.renderer.camera.updateProjectionMatrix(); }
     if (k === 'tod' && this.env) this.env.apply(v);
-    if (k === 'quality') { this.hud.saveOpts(); location.reload(); }
+    if (k === 'quality' || k === 'map') { this.hud.saveOpts(); location.reload(); }
     if (k === 'team' && this.vm) this.vm.setTeam(v);
   }
   endMatch() {
@@ -596,10 +598,10 @@ export class Game {
     const active = this.playing && !this.paused;
     if (active) this.simulate(dt);
     else if (!this.playing) {
-      // 菜单：环绕运输船
-      const t = this.realTime * 0.045;
-      cam.position.set(Math.cos(t) * 46 - 6, 13 + Math.sin(t * 2.1) * 3, Math.sin(t) * 34);
-      cam.lookAt(-4, 1.5, 0);
+      // 菜单：环绕当前地图
+      const o = this.def.orbit, t = this.realTime * 0.045;
+      cam.position.set(o.cx + Math.cos(t) * o.rx, o.y + Math.sin(t * 2.1) * 3, o.cz + Math.sin(t) * o.rz);
+      cam.lookAt(o.look[0], o.look[1], o.look[2]);
       cam.fov = 60; cam.updateProjectionMatrix();
     }
     this.renderFrame(dt);
@@ -663,7 +665,7 @@ export class Game {
     if (this.fpsAcc > 1) {
       this.fps = Math.round(this.fpsN / this.fpsAcc); this.fpsAcc = 0; this.fpsN = 0;
       const lbl = document.querySelector('#radarWrap .lbl');
-      if (lbl) lbl.textContent = `运输船 · ${this.fps} FPS`;
+      if (lbl) lbl.textContent = `${this.def.name} · ${this.fps} FPS`;
       if (this.playing && !this.paused && this.time > 8 && !this.fpsHinted && this.fps < 32 && this.opts.quality !== 'low') {
         this.fpsHinted = true;
         this.hud.toast('帧率较低：可按 Esc 在主菜单把画质调到「均衡」或「流畅」', 5);
