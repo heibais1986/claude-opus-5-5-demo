@@ -332,21 +332,24 @@ export class NavGrid {
     if (s < 0 || e < 0) return null;
     const gen = ++this.gen;
     const W = this.w;
-    const heap = []; // 二叉堆存 idx
+    // 二叉堆：入堆时记下 f 的快照，否则 decrease-key 会破坏堆序，绕远路
+    const heap = [], heapF = [];
     const g = this.g, f = this.f;
+    const swap = (i, j) => { [heap[i], heap[j]] = [heap[j], heap[i]]; [heapF[i], heapF[j]] = [heapF[j], heapF[i]]; };
     const push = (k) => {
-      heap.push(k); let i = heap.length - 1;
-      while (i > 0) { const p = (i - 1) >> 1; if (f[heap[p]] <= f[heap[i]]) break; [heap[p], heap[i]] = [heap[i], heap[p]]; i = p; }
+      heap.push(k); heapF.push(f[k]);
+      let i = heap.length - 1;
+      while (i > 0) { const p = (i - 1) >> 1; if (heapF[p] <= heapF[i]) break; swap(p, i); i = p; }
     };
     const pop = () => {
-      const top = heap[0], last = heap.pop();
+      const top = heap[0], last = heap.pop(), lastF = heapF.pop();
       if (heap.length) {
-        heap[0] = last; let i = 0;
+        heap[0] = last; heapF[0] = lastF; let i = 0;
         for (;;) {
           const l = i * 2 + 1, r = l + 1; let m = i;
-          if (l < heap.length && f[heap[l]] < f[heap[m]]) m = l;
-          if (r < heap.length && f[heap[r]] < f[heap[m]]) m = r;
-          if (m === i) break; [heap[m], heap[i]] = [heap[i], heap[m]]; i = m;
+          if (l < heap.length && heapF[l] < heapF[m]) m = l;
+          if (r < heap.length && heapF[r] < heapF[m]) m = r;
+          if (m === i) break; swap(m, i); i = m;
         }
       }
       return top;

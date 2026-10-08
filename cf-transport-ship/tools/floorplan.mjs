@@ -13,6 +13,7 @@ const id = process.argv[2] || 'dust2';
 const mod = await import(`../src/maps/${id}-layout.js`);
 const L = mod.LAYOUT;
 const boxes = mod.buildBoxes();
+const openBoxes = boxes.filter((bx) => bx.kind !== 'roof');   // 顶棚不参与俯视遮挡判定
 
 const toCollider = (bx) => ({
   x: bx.x, y: bx.y + bx.h / 2, z: bx.z,
@@ -37,7 +38,7 @@ function inBox(bx, x, z) {
 // 覆盖该点的最盒子（俯视取色 / 判定障碍来源）
 function boxAt(x, z) {
   let best = null;
-  for (const bx of boxes) if (inBox(bx, x, z)) if (!best || bx.y + bx.h > best.y + best.h) best = bx;
+  for (const bx of openBoxes) if (inBox(bx, x, z)) if (!best || bx.y + bx.h > best.y + best.h) best = bx;
   return best;
 }
 // 1m 字符网格会漏掉 0.6m 薄墙，子采样补救
@@ -87,18 +88,8 @@ for (let k = 0; k < reachAll.length; k++) reachAll[k] = sets.BL[k] | sets.GR[k];
 
 // ---------- 检查 ----------
 const fail = [];
-const anchors = {
-  'spawn.BL': L.spawns.BL[0], 'spawn.GR': L.spawns.GR[0],
-  'door.mid': { x: 0, z: -2.4 },
-  'mid.west': { x: -24, z: 0 }, 'mid.east': { x: 24, z: 0 },
-  'A.site': { x: -8, z: 17 }, 'B.site': { x: 8, z: -17 },
-  'A.plaza': { x: 0, z: 15 }, 'B.plaza': { x: 0, z: -15 },
-  'A.shed': { x: -20, z: 9 }, 'B.shed': { x: 20, z: -9 },
-  'gate.BL.A': { x: 26, z: 15 }, 'gate.BL.B': { x: 26, z: -15 },
-  'gate.GR.A': { x: -26, z: 15 }, 'gate.GR.B': { x: -26, z: -15 },
-  'gap.mid.A': { x: 15, z: 7 }, 'gap.mid.B': { x: -15, z: -7 },
-  'corner.NW': { x: -39, z: 23 }, 'corner.SE': { x: 39, z: -23 },
-};
+const anchors = L.checks && L.checks.anchors;
+if (!anchors) { console.error(`${id} 布局缺少 checks.anchors，无法校验关键点位`); process.exit(2); }
 console.log(`${id}: ${boxes.length} boxes, nav ${nav.w}x${nav.h} @${nav.cell}m`);
 for (const [name, a] of Object.entries(anchors)) {
   const k = nav.idx(a.x, a.z);
@@ -141,12 +132,28 @@ if (free !== reach) {
     if (cnt >= 4) fail.push(`孤立区 ${cnt} 格 x[${minx.toFixed(1)},${maxx.toFixed(1)}] z[${minz.toFixed(1)},${maxz.toFixed(1)}]`);
   }
 }
-// 视线检查：中路门不应一眼看到两个包点（避免开局对枪秒杀）
+// 掩体之间不应互相穿插（墙、门板、顶棚除外；叠放的箱子顶面恰好相接，不算重叠）
+const PROP = new Set(['cover', 'site', 'dais', 'catwalk', 'container', 'car', 'scaffold', 'barrel', 'xbox', 'block', 'pit', 'low']);
+const props = openBoxes.filter((bx) => PROP.has(bx.kind));
+const warn = [];
+for (let i = 0; i < props.length; i++) for (let j = i + 1; j < props.length; j++) {
+  const a = props[i], b = props[j];
+  const yo = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+  if (yo <= 0.02) continue;
+  const xo = (a.w + b.w) / 2 - Math.abs(a.x - b.x), zo = (a.d + b.d) / 2 - Math.abs(a.z - b.z);
+  if (xo > 0.8 && zo > 0.8) {
+    warn.push(`掩体重叠 ${a.kind}(${a.x},${a.z}) × ${b.kind}(${b.x},${b.z}) 交叠 ${xo.toFixed(1)}x${zo.toFixed(1)}m 高 ${(yo * 100).toFixed(0)}cm`);
+  }
+}
+
+// 视线检查：按布局自带的 checks.sight 清单逐条判定
 function sightBlocked(ax, az, bx2, bz2) {
-  const dx = bx2 - ax, dz = bz2 - az, len = Math.hypot(dx, dz);
   return !nav.lineFree(ax, az, bx2, bz2);
 }
-console.log(`  视线 门->A包点 ${sightBlocked(0, -2.4, -8, 17) ? '遮挡' : '通透'}，门->B包点 ${sightBlocked(0, -2.4, 8, -17) ? '遮挡' : '通透'}`);
+for (const s of (L.checks.sight || [])) {
+  console.log(`  视线 ${s.label}：${sightBlocked(s.a[0], s.a[1], s.b[0], s.b[1]) ? '遮挡' : '通透'}`);
+}
+if (warn.length) { console.log('\n掩体互相穿插（应修正坐标或高度）:'); for (const w of warn) console.log('  - ' + w); }
 
 // ---------- ASCII 俯视图（1 字符 = 1m）----------
 const chars = [];

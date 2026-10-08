@@ -4,7 +4,11 @@ import { createBuilder } from '../mapkit.js';
 import { LAYOUT, buildBoxes } from './dust2-layout.js';
 
 // 布局材质 -> 碰撞材质（命中特效只区分 wood / 其他）
-const CMAT = { adobe: 'concrete', door: 'wood', crate: 'wood', wood: 'wood', stone: 'concrete', barrel: 'metal', truck: 'metal' };
+const CMAT = { adobe: 'concrete', adobeDark: 'concrete', door: 'wood', crate: 'wood', wood: 'wood', stone: 'concrete', barrel: 'metal', truck: 'metal', container: 'metal', metal: 'metal' };
+// 布局材质 -> 外观材质（未列出的一律走土砖墙）
+const SIDE = { door: 'door', wood: 'wood', crate: 'crate', stone: 'stone', metal: 'metal', container: 'container', truck: 'metal', adobeDark: 'adobeDark' };
+// 可以站上去的台面用石板顶，其余用压顶石
+const FLAT_TOP = new Set(['dais', 'catwalk', 'scaffold', 'pit', 'low']);
 
 export function buildDust2(scene, T, world) {
   const kb = createBuilder(scene, T, world, 7731);
@@ -21,6 +25,7 @@ export function buildDust2(scene, T, world) {
   defMat('wood', std({ map: D.crate.map, color: 0xa8855c, normalMap: D.crate.normalMap, roughness: 0.9, metalness: 0 }), 1);
   defMat('door', std({ map: D.door.map, normalMap: D.door.normalMap, roughness: 0.8, metalness: 0.05 }), 'unit');
   defMat('metal', std({ map: D.metal.map, normalMap: D.metal.normalMap, roughness: 0.7, metalness: 0.35 }), 1.2);
+  defMat('container', std({ map: D.metal.map, color: 0x3f7f9e, normalMap: D.metal.normalMap, roughness: 0.68, metalness: 0.4 }), 1.4);
   defMat('truckTop', std({ map: D.metal.map, color: 0xb08a5a, normalMap: D.metal.normalMap, roughness: 0.75, metalness: 0.3 }), 1.2);
   defMat('black', std({ color: 0x23201c, roughness: 0.9, metalness: 0.05 }), 1);
   defMat('lamp', std({ color: 0xfff2d0, emissive: 0xffe2a8, emissiveIntensity: 3.5, roughness: 0.3 }), 1, { shadow: false });
@@ -34,10 +39,13 @@ export function buildDust2(scene, T, world) {
   // ---------- 主体盒子 ----------
   for (const bx of buildBoxes()) {
     const cy = bx.y + bx.h / 2;
-    const side = bx.mat === 'door' ? 'door' : bx.mat === 'wood' ? 'wood' : bx.mat === 'crate' ? 'crate'
-      : bx.mat === 'stone' ? 'stone' : bx.mat === 'truck' ? 'metal' : bx.kind === 'perim' ? 'adobeDark' : 'adobe';
-    const topKey = bx.kind === 'dais' ? 'stone' : 'cap';
-    if (bx.kind === 'barrel') { barrels(bx); } else if (bx.kind === 'site' && bx.mat === 'truck') { truck(bx); } else {
+    const side = SIDE[bx.mat] || (bx.kind === 'perim' ? 'adobeDark' : 'adobe');
+    const topKey = FLAT_TOP.has(bx.kind) ? 'stone' : bx.kind === 'roof' ? 'adobeDark' : 'cap';
+    if (bx.kind === 'barrel') barrels(bx);
+    else if (bx.mat === 'truck') truck(bx);
+    else if (bx.kind === 'container') container(bx);
+    else if (bx.kind === 'fence') fence(bx);
+    else {
       box(bx.x, cy, bx.z, bx.w, bx.h, bx.d, bx.yaw, {
         px: side, nx: side, pz: side, nz: side, py: bx.top !== false ? topKey : null,
       });
@@ -84,6 +92,37 @@ export function buildDust2(scene, T, world) {
     }
   }
 
+  // 蓝色集装箱：波纹侧板 + 顶部角件（A Main 入口的招牌掩体）
+  function container(bx) {
+    box(bx.x, bx.y + bx.h / 2, bx.z, bx.w, bx.h, bx.d, bx.yaw, 'container');
+    box(bx.x, bx.y + bx.h + 0.04, bx.z, bx.w * 0.96, 0.08, bx.d * 0.96, bx.yaw, 'black');
+    const c = Math.cos(bx.yaw), s = Math.sin(bx.yaw);
+    const alongX = bx.w >= bx.d, L = Math.max(bx.w, bx.d);
+    const n = Math.max(3, Math.round(L / 0.85));
+    for (let i = 0; i <= n; i++) {
+      const t = -L / 2 + (L * i) / n;
+      for (const v of [-1, 1]) {
+        const lx = alongX ? t : (v * bx.w) / 2, lz = alongX ? (v * bx.d) / 2 : t;
+        box(bx.x + c * lx + s * lz, bx.y + bx.h * 0.52, bx.z - s * lx + c * lz,
+          alongX ? 0.1 : 0.44, bx.h * 0.88, alongX ? 0.44 : 0.1, bx.yaw, 'container');
+      }
+    }
+  }
+  // 铁丝网围栏：立柱加横杆，视觉上可穿、碰撞与子弹穿透照旧
+  function fence(bx) {
+    const c = Math.cos(bx.yaw), s = Math.sin(bx.yaw);
+    const alongX = bx.w >= bx.d, L = Math.max(bx.w, bx.d);
+    const n = Math.max(2, Math.round(L / 1.4));
+    for (let i = 0; i <= n; i++) {
+      const t = -L / 2 + (L * i) / n;
+      const lx = alongX ? t : 0, lz = alongX ? 0 : t;
+      geom('black', cylG8, bx.x + c * lx + s * lz, bx.y + bx.h / 2, bx.z - s * lx + c * lz, 0, 0, 0, 0.05, bx.h, 0.05);
+    }
+    for (const f of [0.35, 0.72, 0.98]) {
+      box(bx.x, bx.y + bx.h * f, bx.z, alongX ? L : 0.07, 0.06, alongX ? 0.07 : L, bx.yaw, 'metal');
+    }
+  }
+
   // ---------- 门楼拱门 ----------
   for (const a of LAYOUT.arches) {
     const piers = a.axis === 'z' ? [[a.x, a.z - 3], [a.x, a.z + 3]] : [[a.x - 3, a.z], [a.x + 3, a.z]];
@@ -119,19 +158,39 @@ export function buildDust2(scene, T, world) {
   };
 }
 
+const ROOFS = LAYOUT.walls.filter((w) => w.kind === 'roof').map((r) => ({ x: r.x, z: r.z, w: r.w, d: r.d }));
+const N = Math.PI;   // 朝北（+Z）
+const S = 0;         // 朝南（-Z）
+// bot 路线图：不对称地图不能再用「己方坐标取反」，两套目标点直接给世界坐标
+const BOT = {
+  BL: {
+    lanes: [[23, -30], [-3, -14], [-39, -20]],              // 早期占线：长道 / 中路 / 地道
+    flank: [[-39, -20], [-39, 10], [-32, 40]],               // 绕地道打 B 点
+    holds: [[27, -14, N], [-8, 10, N], [-39, 6, N], [40, 38, S], [6, 26, S]],
+    sites: [[40, 38], [43, 42], [30, 22], [-36, 41], [-34, 43]],
+  },
+  GR: {
+    lanes: [[-24, 26], [-2, 20], [40, 40]],                  // 回防：B 门 / 中路门后 / A 点
+    flank: [[-34, 43], [-39, 10], [-39, -14]],               // 从 B 反压地道口
+    holds: [[-5, 17, N], [43, 39, S], [-34, 43, S], [28, 24, S]],
+    sites: [[40, 40], [43, 39], [28, 24], [-42, 40], [-34, 43], [-5, 17]],
+  },
+};
+
 export const dust2Map = {
   id: 'dust2',
   name: '沙漠灰城',
   en: 'DE_DUST2',
-  brief: '经典三线：中路双门、北长道 A 点、南地道 B 点',
-  story: '北非某座被战争遗忘的土城。潜伏者要从东侧庭院突入，在 A（北广场）或 B（南广场）任一处安放炸药；保卫者从西侧庭院回防，中路那两扇破门是双方最先交火的地方。<br>三条东西向通道由两条斜路串起：抢下中路就能两头支援，走长道或地道则要绕开彼此的门楼。整张图绕中心 180° 对称，两边的进攻距离完全相等。',
-  tip: '小提示：中路双门只有 2.4 米宽，先压制再冲；包点平台可以蹲跳上箱堆架枪，但会被长道的人白给。',
+  brief: '三条进攻线：长道、中路、地道，A 点在东北，B 点在西北',
+  story: '北非某座被战争遗忘的土城，格局完全照搬经典 de_dust2：潜伏者在南场出生，保卫者在东北出生，A 包点在东北、B 包点在西北。<br>从南场出来有三条路：<b>长道</b>沿东侧一路向北，经长道双门打进 A Main 直取 A 点；<b>中路</b>穿过土城正中的走廊，撞开那两扇半开的破门，再经 Xbox 拐角和高台（Catwalk）摸向 A 小；<b>地道</b>从西侧拱门钻进去，头顶压着棚子，一路向北出口直通 B 点，中途还在中路双门西侧开了一个俗称「窗口」的拱洞。整张图不对称：保卫者两个包点都近，潜伏者必须先决定走哪条线。',
+  tip: '小提示：三处木门都能穿子弹，先扫门板再冲；A 点的箱堆可以两级跳上去架枪，B 点那辆废弃卡车和平台木箱同理。中路高台是双向通道，谁先站住谁两头都能支援。',
   textures: ['desert'],
   tod: [{ v: 'day', label: '白天' }, { v: 'dusk', label: '黄昏' }],
   sea: false,
   nav: LAYOUT.nav,
+  bot: BOT,
   shadowBox: LAYOUT.shadowBox,
-  radar: { halfW: 42, halfH: 26, overlays: [] },
-  orbit: { cx: 0, cz: 0, rx: 52, rz: 36, y: 40, look: [0, 0, 0] },
+  radar: { halfW: 56, halfH: 56, overlays: ROOFS },
+  orbit: { cx: 0, cz: 0, rx: 76, rz: 76, y: 54, look: [0, 2, 0] },
   build: buildDust2,
 };

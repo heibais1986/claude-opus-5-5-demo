@@ -44,14 +44,27 @@ export class Bot extends Actor {
     const r = Math.random();
     this.role = this.primary === 'awm' ? 'hold' : r < 0.25 ? 'flank' : 'rush';
     this.lane = LANES[(Math.random() * 3) | 0];
+    this.laneIdx = (Math.random() * 3) | 0;
     this.stage = 0;
     this.pickGoal();
   }
-  L(x, z) { return [x * this.side, z * this.side]; } // 己方坐标 -> 世界
+  L(x, z) { return [x * this.side, z * this.side]; } // 己方坐标 -> 世界（对称图专用）
   pickGoal() {
     const g = this.game, nav = g.nav, rnd = Math.random;
-    let gx, gz;
-    if (this.role === 'hold') {
+    // 不对称地图（de_dust2）在描述符里自带两套世界坐标目标点
+    const B = g.def.bot && g.def.bot[this.team];
+    let gx, gz, yaw;
+    if (B) {
+      if (this.role === 'hold') { const h = B.holds[(rnd() * B.holds.length) | 0]; [gx, gz] = h; yaw = h[2]; }
+      else if (this.role === 'flank' && this.stage < 3) [gx, gz] = B.flank[this.stage];
+      else if (this.stage < 1) [gx, gz] = B.lanes[this.laneIdx];
+      else {
+        const st = B.sites[(rnd() * B.sites.length) | 0];
+        const p = nav.randomFree(rnd, st[0] - 7, st[1] - 7, st[0] + 7, st[1] + 7);
+        [gx, gz] = p || st;
+      }
+      this.holdYaw = yaw;
+    } else if (this.role === 'hold') {
       const h = HOLDS[(rnd() * HOLDS.length) | 0];
       [gx, gz] = this.L(h[0], h[1]);
       this.holdYaw = this.side > 0 ? -Math.PI / 2 + h[2] : Math.PI / 2 + h[2];
