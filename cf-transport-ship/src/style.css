@@ -99,7 +99,7 @@ body.lk #clinks{opacity:.22}
 #nameTip{position:absolute;left:50%;top:calc(50% + 26px);transform:translateX(-50%);font-size:14px;font-weight:700;text-shadow:0 1px 2px #000}
 #nameTip.BL{color:var(--bl2)} #nameTip.GR{color:var(--gr2)}
 
-#scope{position:absolute;inset:0;display:none}
+#scope{position:absolute;inset:0;display:none;z-index:1}
 #scope.on{display:block}
 #scope .ring{position:absolute;left:50%;top:50%;width:min(92vh,92vw);height:min(92vh,92vw);transform:translate(-50%,-50%);border-radius:50%;box-shadow:0 0 0 200vmax #000, inset 0 0 40px 18px rgba(0,0,0,.9)}
 #scope .h,#scope .v{position:absolute;background:#000}
@@ -109,6 +109,10 @@ body.lk #clinks{opacity:.22}
 #scope .h2.l{left:0}#scope .h2.r{right:0}
 #scope .v2{position:absolute;left:calc(50% - 1.5px);width:3px;background:#000;height:34%;bottom:0}
 #scope .dot{position:absolute;left:50%;top:50%;width:4px;height:4px;margin:-2px;border-radius:50%;background:#e02010}
+/* 开镜黑罩只挡视野，不挡 HUD：把信息层抬到黑罩之上 */
+#score,#radarWrap,#feed,#vitals,#ammo,#slots,#hit,#center,#toast,#badge,#nameTip,#protect{z-index:2}
+#board{z-index:3}
+#touch{z-index:4}
 
 /* ---------- 计分板 ---------- */
 #board{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(880px,94vw);background:var(--panel2);border:1px solid rgba(255,255,255,.12);padding:14px 16px;backdrop-filter:blur(6px)}

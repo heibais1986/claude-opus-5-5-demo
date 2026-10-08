@@ -196,13 +196,15 @@ export class Actor {
       return;
     }
     // 枪械
-    const trigger = d.auto ? inp.fire : inp.firePressed;
-    if (!trigger || now < w.nextFire || now < w.boltUntil) return;
     if (w.mag <= 0) {
-      if (inp.firePressed) g.onDryFire(this);
+      // 空仓要排在射速 / 拉栓门控之前：狙击枪的 bolt 动画会吃掉 firePressed 边沿，
+      // 放在门控之后打空时就既不响空仓声、也不会自动装填
+      if (inp.firePressed && now >= w.nextFire && now >= w.boltUntil) g.onDryFire(this);
       if (w.canReload()) this.startReload();
       return;
     }
+    const trigger = d.auto ? inp.fire : inp.firePressed;
+    if (!trigger || now < w.nextFire || now < w.boltUntil) return;
     w.mag--; w.lastShot = now; w.nextFire = now + 60 / d.rpm;
     this.stats.shots++;
     const spread = currentSpread(w, { speed: this.speed || 0, onGround: this.onGround, crouch: this.crouch, scoped: this.scoped > 0, scopeReady: this.scopeReady });
@@ -219,7 +221,8 @@ export class Actor {
       w.boltUntil = now + d.bolt;
       if (this.scoped) { this.reScope = this.scoped; this.scoped = 0; this.scopeReady = false; }
     }
-    if (w.mag === 0 && w.canReload() && !this.isPlayer) this.startReload();
+    // 打空即刻补弹（玩家与 bot 一致），狙击枪这类半自动不会因拉栓门控停在空仓
+    if (w.mag === 0 && w.canReload()) this.startReload();
   }
   startReload() {
     const w = this.weapon;
