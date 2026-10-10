@@ -27,7 +27,7 @@ export class Bot extends Actor {
     super(game, o);
     this.diff = DIFF[o.diff] || DIFF.normal;
     this.recoilControl = this.diff.ctrl;
-    this.path = null; this.pi = 0; this.goal = null;
+    this.path = null; this.pi = 0; this.goal = null; this.failT = 0;
     this.target = null; this.visible = false; this.lastSeen = null; this.lastSeenT = -99; this.reactUntil = 0;
     this.errY = 0; this.errP = 0; this.aimHead = false;
     this.strafeDir = 1; this.strafeT = 0; this.burst = 0; this.burstPauseUntil = 0;
@@ -60,7 +60,7 @@ export class Bot extends Actor {
       else if (this.stage < 1) [gx, gz] = B.lanes[this.laneIdx];
       else {
         const st = B.sites[(rnd() * B.sites.length) | 0];
-        const p = nav.randomFree(rnd, st[0] - 7, st[1] - 7, st[0] + 7, st[1] + 7);
+        const p = nav.randomFree(rnd, st[0] - 7, st[1] - 7, st[0] + 7, st[1] + 7, this.pos.y);
         [gx, gz] = p || st;
       }
       this.holdYaw = yaw;
@@ -78,8 +78,23 @@ export class Bot extends Actor {
       [gx, gz] = p || this.L(10, 0);
     }
     this.goal = [gx, gz];
-    this.path = nav.findPath(this.pos.x, this.pos.z, gx, gz);
+    this.path = nav.findPath(this.pos.x, this.pos.z, gx, gz, this.pos.y);
     this.pi = 1;
+    this.failT = 0;
+    if (!this.path) {
+      // 真实地图是上下两层的（中路在猫洞下面、长道在斜坡上面），单张高度场经常连不过去。
+      // 连不上就就近换一个走得到的点：抱着一个不可达的目标原地定死，比绕路难看得多。
+      const r = () => Math.random();
+      for (let t = 1; t <= 3 && !this.path; t++) {
+        const w = 10 * t;
+        const p = nav.randomFree(r, this.pos.x - w, this.pos.z - w, this.pos.x + w, this.pos.z + w, this.pos.y);
+        if (!p) break;
+        this.goal = [p[0], p[1]];
+        this.path = nav.findPath(this.pos.x, this.pos.z, p[0], p[1], this.pos.y);
+        this.pi = 1;
+      }
+      if (!this.path) this.failT = this.game.time;
+    }
   }
   hear(pos, loud) {
     if (!this.alive || this.visible) return;
@@ -143,14 +158,15 @@ export class Bot extends Actor {
     if (!this.visible) {
       if (this.lastSeen && now - this.lastSeenT < 5 && this.role !== 'hold') {
         if (!this.path || this.huntFor !== this.lastSeenT) {
-          this.path = g.nav.findPath(this.pos.x, this.pos.z, this.lastSeen.x, this.lastSeen.z); this.pi = 1; this.huntFor = this.lastSeenT;
+          this.path = g.nav.findPath(this.pos.x, this.pos.z, this.lastSeen.x, this.lastSeen.z, this.pos.y); this.pi = 1; this.huntFor = this.lastSeenT;
         }
       } else if (this.heard && now - this.heardT < 3 && this.role !== 'hold' && Math.random() < 0.5) {
-        this.path = g.nav.findPath(this.pos.x, this.pos.z, this.heard.x, this.heard.z); this.pi = 1;
+        this.path = g.nav.findPath(this.pos.x, this.pos.z, this.heard.x, this.heard.z, this.pos.y); this.pi = 1;
         this.lookYaw = Math.atan2(-(this.heard.x - this.pos.x), -(this.heard.z - this.pos.z));
         this.heard = null;
       } else if (!this.path || this.pi >= this.path.length) {
-        if (this.role === 'hold' && this.goal && this.pos.distanceTo(_v.set(this.goal[0], this.pos.y, this.goal[1])) < 1.2) {
+        if (this.failT && now - this.failT < 2.5) { /* 附近确实没路，先待一会儿，别每帧重算寻路 */ }
+        else if (this.role === 'hold' && this.goal && this.pos.distanceTo(_v.set(this.goal[0], this.pos.y, this.goal[1])) < 1.2) {
           this.holdT += 0.15;
           if (this.holdT > 25 + Math.random() * 20) { this.holdT = 0; this.pickGoal(); }
         } else { this.stage++; this.pickGoal(); }
@@ -176,7 +192,9 @@ export class Bot extends Actor {
       const moved = this.lastCheck.distanceTo(this.pos);
       if (this.path && this.pi < this.path.length && moved < 0.35 && !this.visible) {
         this.stuckN++; this.wantJump = true;
-        if (this.stuckN > 2) { this.stuckN = 0; this.stage++; this.pickGoal(); }
+        // 从当前位置重算还是同一条弦，跳两次也出不去：沿路径往后让一个路点，贴着障碍绕开
+        if (this.stuckN >= 2 && this.pi < this.path.length - 1) this.pi++;
+        if (this.stuckN > 4) { this.stuckN = 0; this.stage++; this.pickGoal(); }
       } else this.stuckN = 0;
       this.lastCheck.copy(this.pos); this.stuckT = 0;
     }

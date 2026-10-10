@@ -1,55 +1,54 @@
-// 离线校验地图布局：俯视图（PNG + ASCII）与寻路网格可达性
-// 用法：node tools/floorplan.mjs [dust2] [--scale=8] [--out=path.png]
+// 离线校验真实地图数据：导航场可达性、Valve 官方导航图一致性、关键视线，并输出俯视图
+// 用法：node tools/floorplan.mjs [dust2] [--scale=8] [--out=dist/floorplan-dust2.png]
+// 走的是运行时同一条解码路径（src/maps/geo.js），所以脚本通过就等于游戏里的地图通过。
 import zlib from 'node:zlib';
 import fs from 'node:fs';
 import path from 'node:path';
 import { World, NavGrid } from '../src/physics.js';
+import { decodeGeo, navField, makeSampler, addColliders, buildSpawns } from '../src/maps/geo.js';
+import { MESH_SPAWNS, NAV_NODES, NAV_EDGES } from '../src/maps/dust2-geo.js';
 
 const arg = (name, dft) => process.argv.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? dft;
 const SCALE = Number(arg('scale', 8));
 
-// ---------- 布局加载 ----------
 const id = process.argv[2] || 'dust2';
-const mod = await import(`../src/maps/${id}-layout.js`);
-const L = mod.LAYOUT;
-const boxes = mod.buildBoxes();
-const openBoxes = boxes.filter((bx) => bx.kind !== 'roof');   // 顶棚不参与俯视遮挡判定
+if (id !== 'dust2') { console.error(`${id} 还没有真实数据块，floorplan 目前只校验 dust2`); process.exit(2); }
+const { LAYOUT } = await import(`../src/maps/${id}-layout.js`);
 
-const toCollider = (bx) => ({
-  x: bx.x, y: bx.y + bx.h / 2, z: bx.z,
-  sx: bx.w, sy: bx.h, sz: bx.d, yaw: bx.yaw || 0,
-  mat: bx.mat || 'concrete', solid: bx.solid !== false,
-  bullet: bx.bullet || 'block', sight: bx.sight !== false, surface: 'sand',
-});
-
+// ---------- 装配：与 game.js 完全一致 ----------
+const G = await decodeGeo();
+const S = makeSampler(G);
 const world = new World();
-for (const bx of boxes) world.add(toCollider(bx));
-world.build();
+addColliders(world, G, LAYOUT.bounds, S);
+const n = LAYOUT.nav;
+const nav = new NavGrid(world, n.x0, n.z0, n.x1, n.z1, n.cell, n.r, navField(G));
+const yaw = LAYOUT.spawnYaw;
+const spawns = { BL: buildSpawns(MESH_SPAWNS.T, 10, yaw.BL, S), GR: buildSpawns(MESH_SPAWNS.CT, 10, yaw.GR, S) };
 
-const n = L.nav;
-const nav = new NavGrid(world, n.x0, n.z0, n.x1, n.z1, n.cell, n.r);
+const fail = [];
+const nFloor = world.colliders.filter((c) => c.tag === 'floor').length;
+const nSolid = world.colliders.filter((c) => c.tag === 'solid').length;
+const nRoof = world.colliders.filter((c) => c.tag === 'roof').length;
+console.log(`${id}: 碰撞体 ${world.colliders.length}（地面 ${nFloor} / 实体 ${nSolid} / 顶棚 ${nRoof}），nav ${nav.w}x${nav.h} @${nav.cell}m`);
 
-// ---------- 几何查询 ----------
-function inBox(bx, x, z) {
-  const a = bx.yaw || 0, c = Math.cos(a), s = Math.sin(a);
-  const dx = x - bx.x, dz = z - bx.z;
-  return Math.abs(c * dx - s * dz) <= bx.w / 2 && Math.abs(s * dx + c * dz) <= bx.d / 2;
-}
-// 覆盖该点的最盒子（俯视取色 / 判定障碍来源）
-function boxAt(x, z) {
-  let best = null;
-  for (const bx of openBoxes) if (inBox(bx, x, z)) if (!best || bx.y + bx.h > best.y + best.h) best = bx;
-  return best;
-}
-// 1m 字符网格会漏掉 0.6m 薄墙，子采样补救
-function boxNear(x, z) {
-  let best = null;
-  for (const o of [[0, 0], [-0.27, 0], [0.27, 0], [0, -0.27], [0, 0.27]]) {
-    const b = boxAt(x + o[0], z + o[1]);
-    if (b && (!best || b.y + b.h > best.y + best.h)) best = b;
+// ---------- 掩体占用图（只给俯视图着色用）----------
+const wall = new Uint8Array(nav.w * nav.h);
+for (const c of world.colliders) {
+  if (c.tag !== 'solid') continue;
+  const rise = c.top - S.groundAt(c.x, c.z);
+  if (rise < 0.36) continue;
+  const lvl = rise > 2 ? 2 : 1;
+  const i0 = Math.floor((c.minX - nav.x0) / nav.cell), i1 = Math.floor((c.maxX - nav.x0) / nav.cell);
+  const j0 = Math.floor((c.minZ - nav.z0) / nav.cell), j1 = Math.floor((c.maxZ - nav.z0) / nav.cell);
+  for (let j = Math.max(0, j0); j <= Math.min(nav.h - 1, j1); j++) {
+    for (let i = Math.max(0, i0); i <= Math.min(nav.w - 1, i1); i++) {
+      const k = j * nav.w + i;
+      if (nav.block[k]) continue;
+      if (wall[k] < lvl) wall[k] = lvl;
+    }
   }
-  return best;
 }
+
 function pathLen(p) {
   if (!p || p.length < 2) return p ? 0 : -1;
   let s = 0;
@@ -57,7 +56,7 @@ function pathLen(p) {
   return s;
 }
 
-// ---------- 洪泛可达性 ----------
+// ---------- 洪泛可达性：必须沿 link 掩码扩展，否则会把断崖当成台阶 ----------
 function flood(startK, out) {
   if (startK < 0 || nav.block[startK]) return out;
   const W = nav.w, stack = [startK];
@@ -72,6 +71,7 @@ function flood(startK, out) {
       const nk = nj * W + ni;
       if (nav.block[nk] || out[nk]) continue;
       if (di && dj && (nav.block[kj * W + ni] || nav.block[nj * W + ki])) continue;
+      if (!nav.linkOk(k, di, dj)) continue;
       out[nk] = 1; stack.push(nk);
     }
   }
@@ -80,173 +80,303 @@ function flood(startK, out) {
 const sets = {};
 for (const team of ['BL', 'GR']) {
   const u = new Uint8Array(nav.w * nav.h);
-  for (const s of L.spawns[team]) flood(nav.idx(s.x, s.z), u);
+  for (const sp of spawns[team]) flood(nav.idx(sp.x, sp.z), u);
   sets[team] = u;
 }
 const reachAll = new Uint8Array(nav.w * nav.h);
 for (let k = 0; k < reachAll.length; k++) reachAll[k] = sets.BL[k] | sets.GR[k];
 
-// ---------- 检查 ----------
-const fail = [];
-const anchors = L.checks && L.checks.anchors;
+// ---------- 关键点位 ----------
+const anchors = LAYOUT.checks.anchors;
 if (!anchors) { console.error(`${id} 布局缺少 checks.anchors，无法校验关键点位`); process.exit(2); }
-console.log(`${id}: ${boxes.length} boxes, nav ${nav.w}x${nav.h} @${nav.cell}m`);
 for (const [name, a] of Object.entries(anchors)) {
   const k = nav.idx(a.x, a.z);
   if (k < 0) { fail.push(`${name}: 网格越界`); continue; }
-  const b = boxAt(a.x, a.z);
-  if (nav.block[k]) { fail.push(`${name} (${a.x},${a.z}): 不可走，来源=${b ? b.kind + '/' + b.mat + ' top=' + (b.y + b.h).toFixed(2) : '余量不足'}`); continue; }
-  const team = sets.BL[k] ? 'BL' : sets.GR[k] ? 'GR' : null;
-  if (!team) { fail.push(`${name}: 两队都到不了`); continue; }
-  const dB = pathLen(nav.findPath(L.spawns.BL[0].x, L.spawns.BL[0].z, a.x, a.z));
-  const dG = pathLen(nav.findPath(L.spawns.GR[0].x, L.spawns.GR[0].z, a.x, a.z));
-  console.log(`  ${name.padEnd(10)} 潜伏 ${dB < 0 ? '不可达' : dB.toFixed(1) + 'm'} / 保卫 ${dG < 0 ? '不可达' : dG.toFixed(1) + 'm'}`);
+  if (nav.block[k]) {
+    const f = nav.nearestFree(k);
+    if (f < 0) { fail.push(`${name} (${a.x},${a.z}): 不可走且附近无可走格`); continue; }
+    const [fx, fz] = nav.center(f);
+    const d = Math.hypot(fx - a.x, fz - a.z);
+    if (d > 1.2) { fail.push(`${name} (${a.x},${a.z}): 不可走，最近可走格 ${d.toFixed(1)}m 外`); continue; }
+    console.log(`  ${name.padEnd(18)} 贴墙，吸附 ${d.toFixed(1)}m → (${fx.toFixed(1)},${fz.toFixed(1)})`);
+    a.x = fx; a.z = fz;
+  }
+  // 吸附之后点位已经挪了，可达性要按新的格子判，否则「贴墙但旁边就是通路」的点会被报成死点
+  const kk = nav.idx(a.x, a.z);
+  const team = sets.BL[kk] ? 'BL' : sets.GR[kk] ? 'GR' : null;
+  if (!team) { fail.push(`${name} (${a.x},${a.z}): 两队都到不了`); continue; }
+  if (name.startsWith('spawn.')) continue;
+  const dB = pathLen(nav.findPath(spawns.BL[0].x, spawns.BL[0].z, a.x, a.z, spawns.BL[0].y));
+  const dG = pathLen(nav.findPath(spawns.GR[0].x, spawns.GR[0].z, a.x, a.z, spawns.GR[0].y));
+  if (dB < 0 && dG < 0) { fail.push(`${name}: 寻路不通`); continue; }
+  console.log(`  ${name.padEnd(18)} 潜伏 ${dB < 0 ? '不可达' : dB.toFixed(1) + 'm'} / 保卫 ${dG < 0 ? '不可达' : dG.toFixed(1) + 'm'} 地面 ${nav.groundAt(a.x, a.z).toFixed(2)}m`);
 }
-for (const [t, u] of Object.entries(sets)) {
-  const other = t === 'BL' ? 'GR' : 'BL';
-  for (const s of L.spawns[t]) {
+
+// ---------- 出生点 ----------
+for (const team of ['BL', 'GR']) {
+  const other = team === 'BL' ? 'GR' : 'BL';
+  for (const s of spawns[team]) {
     const k = nav.idx(s.x, s.z);
-    if (k < 0 || nav.block[k]) { fail.push(`spawn ${t} (${s.x},${s.z}) 不可走`); continue; }
-    if (!u[k]) fail.push(`spawn ${t} (${s.x},${s.z}) 不在本队洪泛区`);
-    if (!sets[other][k]) fail.push(`spawn ${t} (${s.x},${s.z}) 对方进不来（正常应互通）`);
-    const b = boxAt(s.x, s.z);
-    if (b) fail.push(`spawn ${t} (${s.x},${s.z}) 与 ${b.kind} 重叠`);
+    if (k < 0 || nav.block[k]) { fail.push(`spawn ${team} (${s.x},${s.z}) 不可走`); continue; }
+    if (!sets[team][k]) fail.push(`spawn ${team} (${s.x},${s.z}) 不在本队洪泛区`);
+    if (!sets[other][k]) fail.push(`spawn ${team} (${s.x},${s.z}) 对方进不来（正常应互通）`);
   }
 }
+// 导航场海拔 vs Valve 官方出生点海拔
+for (const [team, list] of Object.entries({ BL: MESH_SPAWNS.T, GR: MESH_SPAWNS.CT })) {
+  let sum = 0, max = 0, cnt = 0;
+  for (const p of list) {
+    const k = nav.idx(p.x, p.z);
+    if (k < 0 || nav.block[k]) continue;
+    const d = Math.abs(nav.ground[k] - p.y);
+    sum += d; cnt++; if (d > max) max = d;
+  }
+  console.log(`  ${team} 出生点海拔偏差：均值 ${(sum / cnt).toFixed(2)}m，最大 ${max.toFixed(2)}m`);
+  if (max > 1.2) fail.push(`${team} 出生点海拔偏差 ${max.toFixed(2)}m > 1.2m`);
+}
+
+// ---------- 可达覆盖率：单向区块（能跳下来爬不回去）与真孤立区块要分开看 ----------
 let free = 0, reach = 0;
 for (let k = 0; k < nav.block.length; k++) if (!nav.block[k]) { free++; if (reachAll[k]) reach++; }
-console.log(`  可走格 ${reach}/${free}（${(100 * reach / free).toFixed(1)}% 可达）`);
+console.log(`  可走格 ${reach}/${free}（${(100 * reach / free).toFixed(1)}% 双向可达）`);
+// 无向连通分量：链接是有方向的（上阶受限、下落不限），所以「到不了」不等于「孤立」
+const compId = new Int32Array(nav.w * nav.h).fill(-1);
+const compSize = [];
+const undirected = (k, di, dj) => {
+  const ni = (k % nav.w) + di, nj = (((k / nav.w) | 0) + dj);
+  if (ni < 0 || nj < 0 || ni >= nav.w || nj >= nav.h) return -1;
+  const nk = nj * nav.w + ni;
+  if (nav.block[nk]) return -1;
+  const bit = di > 0 ? 1 : di < 0 ? 4 : dj > 0 ? 2 : 8;
+  const back = di > 0 ? 4 : di < 0 ? 1 : dj > 0 ? 8 : 2;
+  if ((nav.link[k] & bit) || (nav.link[nk] & back)) return nk;
+  return -1;
+};
 if (free !== reach) {
-  const seen = new Uint8Array(nav.w * nav.h);
-  for (let k = 0; k < nav.block.length; k++) {
-    if (nav.block[k] || reachAll[k] || seen[k]) continue;
-    const g = flood(k, new Uint8Array(nav.w * nav.h));
-    let minx = 1e9, maxx = -1e9, minz = 1e9, maxz = -1e9, cnt = 0;
-    for (let q = 0; q < g.length; q++) {
-      if (!g[q]) continue;
-      seen[q] = 1; cnt++;
-      const [cx, cz] = nav.center(q);
+  for (let s = 0; s < nav.block.length; s++) {
+    if (nav.block[s] || compId[s] >= 0) continue;
+    const id = compSize.length, stack = [s];
+    compId[s] = id; let cnt = 0, touched = false;
+    let minx = 1e9, maxx = -1e9, minz = 1e9, maxz = -1e9;
+    while (stack.length) {
+      const k = stack.pop(); cnt++;
+      if (reachAll[k]) touched = true;
+      const [cx, cz] = nav.center(k);
       minx = Math.min(minx, cx); maxx = Math.max(maxx, cx);
       minz = Math.min(minz, cz); maxz = Math.max(maxz, cz);
+      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nk = undirected(k, di, dj);
+        if (nk >= 0 && compId[nk] < 0) { compId[nk] = id; stack.push(nk); }
+      }
     }
-    if (cnt >= 4) fail.push(`孤立区 ${cnt} 格 x[${minx.toFixed(1)},${maxx.toFixed(1)}] z[${minz.toFixed(1)},${maxz.toFixed(1)}]`);
+    compSize.push({ cnt, touched, box: [minx, maxx, minz, maxz] });
   }
-}
-// 掩体之间不应互相穿插（墙、门板、顶棚除外；叠放的箱子顶面恰好相接，不算重叠）
-const PROP = new Set(['cover', 'site', 'dais', 'catwalk', 'container', 'car', 'scaffold', 'barrel', 'xbox', 'block', 'pit', 'low']);
-const props = openBoxes.filter((bx) => PROP.has(bx.kind));
-const warn = [];
-for (let i = 0; i < props.length; i++) for (let j = i + 1; j < props.length; j++) {
-  const a = props[i], b = props[j];
-  const yo = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
-  if (yo <= 0.02) continue;
-  const xo = (a.w + b.w) / 2 - Math.abs(a.x - b.x), zo = (a.d + b.d) / 2 - Math.abs(a.z - b.z);
-  if (xo > 0.8 && zo > 0.8) {
-    warn.push(`掩体重叠 ${a.kind}(${a.x},${a.z}) × ${b.kind}(${b.x},${b.z}) 交叠 ${xo.toFixed(1)}x${zo.toFixed(1)}m 高 ${(yo * 100).toFixed(0)}cm`);
+  // 孤立区：被真实碰撞体封死的小块（门板、栏杆后面）是正常的，只统计面积；
+  // 成片的孤立区才说明导航场或碰撞体算错了
+  let orphan = 0;
+  const big = [];
+  for (const c of compSize) {
+    if (c.touched) continue;
+    orphan += c.cnt;
+    if (c.cnt >= 60) big.push(c);
   }
+  console.log(`  孤立区 ${orphan} 格（${(100 * orphan / free).toFixed(1)}% 可走面积，被实体封死的小块）`);
+  for (const c of big) fail.push(`大孤立区 ${c.cnt} 格 x[${c.box[0].toFixed(1)},${c.box[1].toFixed(1)}] z[${c.box[2].toFixed(1)},${c.box[3].toFixed(1)}]`);
+  // 与出生点同处一个无向分量、却有去无回的区域
+  const seedComp = compId[nav.idx(spawns.BL[0].x, spawns.BL[0].z)];
+  let oneWay = 0, oneWayBox = null;
+  for (let k = 0; k < nav.block.length; k++) {
+    if (nav.block[k] || reachAll[k] || compId[k] !== seedComp) continue;
+    oneWay++;
+    const [cx, cz] = nav.center(k);
+    oneWayBox = oneWayBox
+      ? [Math.min(oneWayBox[0], cx), Math.max(oneWayBox[1], cx), Math.min(oneWayBox[2], cz), Math.max(oneWayBox[3], cz)]
+      : [cx, cx, cz, cz];
+  }
+  if (oneWay) console.log(`  单向区 ${oneWay} 格（能跳下去、爬不回来）x[${oneWayBox[0].toFixed(1)},${oneWayBox[1].toFixed(1)}] z[${oneWayBox[2].toFixed(1)},${oneWayBox[3].toFixed(1)}]`);
+  if (oneWay > free * 0.02) fail.push(`单向区 ${oneWay} 格超过可走面积 2%`);
 }
 
-// 视线检查：按布局自带的 checks.sight 清单逐条判定
-function sightBlocked(ax, az, bx2, bz2) {
-  return !nav.lineFree(ax, az, bx2, bz2);
+// ---------- 与 Valve 官方导航图对照 ----------
+// 高度场是自己按 0.42m 台阶上限重算的，与官方连通性允许有小比例差异；超过阈值说明体素或场高算错了
+{
+  // 用真实三角网格沿竖直方向采样：官方导航图是贴着几何做的，门洞下沿、雨棚底面、台阶立面上都可能有 nav 点。
+  // 那种点在任何体素化碰撞里都站不住人，算不得生成错误；只有「真实几何明明能站人却找不到可走格」才要拦。
+  const M = G.geoMeta, [ox, oy, oz] = M.origin, [qx, qy, qz] = M.scale;
+  const tri = new Float32Array(M.nTris * 9);
+  for (let t = 0; t < M.nTris; t++) for (let v = 0; v < 3; v++) {
+    const p = G.idx[t * 3 + v] * 3;
+    tri[t * 9 + v * 3] = ox + G.verts[p] * qx;
+    tri[t * 9 + v * 3 + 1] = oy + G.verts[p + 1] * qy;
+    tri[t * 9 + v * 3 + 2] = oz + G.verts[p + 2] * qz;
+  }
+  const standable = (x, z, gy) => {
+    let ground = NaN, ceil = Infinity;
+    const cs = [];
+    for (let t = 0; t < M.nTris; t++) {
+      const o = t * 9;
+      const ax = tri[o], az = tri[o + 2], bx = tri[o + 3], bz = tri[o + 5], vx = tri[o + 6], vz = tri[o + 8];
+      const d1 = (bx - ax) * (z - az) - (bz - az) * (x - ax);
+      const d2 = (vx - bx) * (z - bz) - (vz - bz) * (x - bx);
+      const d3 = (ax - vx) * (z - vz) - (az - vz) * (x - vx);
+      if (!((d1 >= 0 && d2 >= 0 && d3 >= 0) || (d1 <= 0 && d2 <= 0 && d3 <= 0))) continue;
+      const sum = d1 + d2 + d3;
+      if (Math.abs(sum) < 1e-9) continue;
+      const y = (d2 * tri[o + 1] + d3 * tri[o + 4] + d1 * tri[o + 7]) / sum;
+      if (y < gy - 0.25 || y > gy + 8) continue;
+      cs.push(y);
+    }
+    cs.sort((a, b) => a - b);
+    for (const y of cs) {
+      if (Number.isNaN(ground)) {
+        if (y <= gy + 0.5) ground = y; else return false;   // 第一张面就高出导航海拔 → 这点在实体里
+        continue;
+      }
+      if (y > ground + 0.05) { ceil = y; break; }
+    }
+    return !Number.isNaN(ground) && ceil - ground >= 1.5;
+  };
+  const badNodes = [];
+  let near = 0, inSolid = 0;
+  for (let i = 0; i < NAV_NODES.length; i++) {
+    const [x, z] = NAV_NODES[i];
+    const k = nav.idx(x, z);
+    if (k >= 0 && !nav.block[k]) continue;
+    const f = nav.nearestFree(k);
+    if (f < 0) { badNodes.push([i, x, z, '附近无可走格']); continue; }
+    const [fx, fz] = nav.center(f);
+    const d = Math.hypot(fx - x, fz - z);
+    if (d <= 1.5) { near++; continue; }
+    const gy = k < 0 || G.navY[k] === G.navMeta.blocked ? nav.groundAt(x, z) : nav.ground[k];
+    if (!standable(x, z, gy)) { inSolid++; continue; }
+    badNodes.push([i, x, z, `最近可走格 ${d.toFixed(1)}m 外`]);
+  }
+  let badEdges = 0, unreachableEdges = 0;
+  for (const [i, j] of NAV_EDGES) {
+    const a = NAV_NODES[i], b = NAV_NODES[j];
+    if (!a || !b) { badEdges++; continue; }
+    if (nav.lineFree(a[0], a[1], b[0], b[1])) continue;
+    const straight = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const len = pathLen(nav.findPath(a[0], a[1], b[0], b[1]));
+    if (len < 0) { unreachableEdges++; badEdges++; continue; }
+    if (len > straight * 2.5 + 1.5) badEdges++;
+  }
+  const pct = (v, t) => `${(100 * v / t).toFixed(1)}%`;
+  console.log(`  真实导航 ${NAV_NODES.length} 节点：坏点 ${badNodes.length}（${pct(badNodes.length, NAV_NODES.length)}），官方点本身在实体里 ${inSolid}，贴墙可绕 ${near}`);
+  console.log(`  真实导航 ${NAV_EDGES.length} 条边：不通 ${unreachableEdges}（${pct(unreachableEdges, NAV_EDGES.length)}），绕行过大 ${badEdges - unreachableEdges}`);
+  for (const [i, x, z, why] of badNodes.slice(0, 10)) console.log(`    - 节点 ${i} (${x.toFixed(1)},${z.toFixed(1)}) ${why}`);
+  if (badNodes.length / NAV_NODES.length > 0.03) fail.push(`真实导航坏点比例 ${pct(badNodes.length, NAV_NODES.length)} > 3%`);
+  if (unreachableEdges / NAV_EDGES.length > 0.03) fail.push(`真实导航不通边比例 ${pct(unreachableEdges, NAV_EDGES.length)} > 3%`);
 }
-for (const s of (L.checks.sight || [])) {
+
+// ---------- 视线：按官方清单用与 bot 相同的 'sight' 射线判定 ----------
+function sightBlocked(ax, az, bx, bz) {
+  const ay = nav.groundAt(ax, az) + 1.6, by = nav.groundAt(bx, bz) + 1.5;
+  const d = Math.hypot(bx - ax, by - ay, bz - az);
+  if (d < 0.01) return false;
+  const hit = world.raycast(ax, ay, az, (bx - ax) / d, (by - ay) / d, (bz - az) / d, d - 0.2, 'sight');
+  return !!hit;
+}
+for (const s of (LAYOUT.checks.sight || [])) {
   console.log(`  视线 ${s.label}：${sightBlocked(s.a[0], s.a[1], s.b[0], s.b[1]) ? '遮挡' : '通透'}`);
 }
-if (warn.length) { console.log('\n掩体互相穿插（应修正坐标或高度）:'); for (const w of warn) console.log('  - ' + w); }
 
 // ---------- ASCII 俯视图（1 字符 = 1m）----------
-const chars = [];
-for (let z = L.bounds.z[1]; z >= L.bounds.z[0]; z -= 1) {
+console.log('\n图例 #墙 o掩体 _台面 :不可走 .双方可达 g仅保卫 b仅潜伏 X都到不了\n');
+for (let z = LAYOUT.bounds.z[1]; z >= LAYOUT.bounds.z[0]; z -= 1) {
   let line = '';
-  for (let x = L.bounds.x[0]; x <= L.bounds.x[1]; x += 1) {
-    const b = boxNear(x + 0.5, z - 0.5);
-    const k = nav.idx(x + 0.5, z - 0.5);
-    if (b) {
-      const top = b.y + b.h;
-      line += b.kind === 'perim' ? '█' : top >= 4 ? '#' : b.kind === 'dais' ? '_' : b.h >= 1.4 ? 'O' : top <= 0.4 ? '_' : 'o';
-    } else if (k < 0) line += ' ';
-    else if (nav.block[k]) line += ':';
-    else if (!sets.BL[k] && !sets.GR[k]) line += 'X';
+  for (let x = LAYOUT.bounds.x[0]; x <= LAYOUT.bounds.x[1]; x += 1) {
+    const cx = x + 0.5, cz = z - 0.5;
+    const k = nav.idx(cx, cz);
+    if (k < 0) { line += ' '; continue; }
+    if (nav.block[k]) { line += ':'; continue; }
+    if (wall[k] === 2) { line += '#'; continue; }
+    if (wall[k] === 1) { line += 'o'; continue; }
+    if (!sets.BL[k] && !sets.GR[k]) line += 'X';
     else if (!sets.BL[k]) line += 'g';
     else if (!sets.GR[k]) line += 'b';
     else line += '.';
   }
-  chars.push(line);
+  console.log(line);
 }
-console.log('\n图例 #墙 o掩体 _平台 :贴墙余量 .双方可达 g仅保卫 b仅潜伏 X都到不了\n');
-console.log(chars.join('\n') + '\n');
+console.log('');
 
 // ---------- PNG ----------
-const W = Math.round((L.bounds.x[1] - L.bounds.x[0]) * SCALE), H = Math.round((L.bounds.z[1] - L.bounds.z[0]) * SCALE);
+const W = Math.round((LAYOUT.bounds.x[1] - LAYOUT.bounds.x[0]) * SCALE);
+const H = Math.round((LAYOUT.bounds.z[1] - LAYOUT.bounds.z[0]) * SCALE);
 const px = Buffer.alloc(W * H * 3);
-const COL = {
-  sand: [214, 190, 150], adobe: [188, 160, 120], perim: [150, 126, 96], door: [110, 78, 46],
-  crate: [172, 128, 70], wood: [150, 108, 62], stone: [156, 154, 148], barrel: [120, 96, 76],
-  truck: [128, 110, 96],
-};
-const toPx = (x, z) => [Math.round((x - L.bounds.x[0]) * SCALE), Math.round((L.bounds.z[1] - z) * SCALE)];
-// 先铺沙
-for (let i = 0; i < px.length; i += 3) { px[i] = COL.sand[0]; px[i + 1] = COL.sand[1]; px[i + 2] = COL.sand[2]; }
-function blend(x, y, c, mix) {
-  if (x < 0 || y < 0 || x >= W || y >= H) return;
-  const i = (y * W + x) * 3;
-  px[i] = px[i] * (1 - mix) + c[0] * mix;
-  px[i + 1] = px[i + 1] * (1 - mix) + c[1] * mix;
-  px[i + 2] = px[i + 2] * (1 - mix) + c[2] * mix;
-}
-for (const bx of boxes) {
-  const a = bx.yaw || 0;
-  const ex = Math.abs(Math.cos(a)) * bx.w / 2 + Math.abs(Math.sin(a)) * bx.d / 2;
-  const ez = Math.abs(Math.sin(a)) * bx.w / 2 + Math.abs(Math.cos(a)) * bx.d / 2;
-  const [x0, y0] = toPx(bx.x - ex, bx.z + ez), [x1, y1] = toPx(bx.x + ex, bx.z - ez);
-  const base = (COL[bx.mat] || COL.adobe).map((v) => v * Math.max(0.5, 1 - (bx.y + bx.h) / 18));
-  for (let py = y0; py <= y1; py++) for (let pxx = x0; pxx <= x1; pxx++) {
-    const wx = L.bounds.x[0] + (pxx + 0.5) / SCALE, wz = L.bounds.z[1] - (py + 0.5) / SCALE;
-    if (inBox(bx, wx, wz)) {
-      const i = (py * W + pxx) * 3;
-      px[i] = base[0]; px[i + 1] = base[1]; px[i + 2] = base[2];
-    }
-  }
-  // 描边，方便看清墙与开口
-  for (let py = y0; py <= y1; py++) for (let pxx = x0; pxx <= x1; pxx++) {
-    const wx = L.bounds.x[0] + (pxx + 0.5) / SCALE, wz = L.bounds.z[1] - (py + 0.5) / SCALE;
-    if (!inBox(bx, wx, wz)) continue;
-    const near = inBox(bx, wx + 0.9 / SCALE, wz) && inBox(bx, wx - 0.9 / SCALE, wz) && inBox(bx, wx, wz + 0.9 / SCALE) && inBox(bx, wx, wz - 0.9 / SCALE);
-    if (!near) { const i = (py * W + pxx) * 3; for (let c = 0; c < 3; c++) px[i + c] *= 0.55; }
+const toPx = (x, z) => [Math.round((x - LAYOUT.bounds.x[0]) * SCALE), Math.round((LAYOUT.bounds.z[1] - z) * SCALE)];
+let minG = 1e9, maxG = -1e9;
+for (let k = 0; k < nav.block.length; k++) if (!nav.block[k]) { minG = Math.min(minG, nav.ground[k]); maxG = Math.max(maxG, nav.ground[k]); }
+const span = Math.max(0.001, maxG - minG);
+// 底色：真实地面海拔渐变，低处暗、高处亮（dust2 的场高差本身就是可读信息）
+for (let py = 0; py < H; py++) {
+  const wz = LAYOUT.bounds.z[1] - (py + 0.5) / SCALE;
+  for (let pxx = 0; pxx < W; pxx++) {
+    const wx = LAYOUT.bounds.x[0] + (pxx + 0.5) / SCALE;
+    const k = nav.idx(wx, wz);
+    const i = (py * W + pxx) * 3;
+    let t = 0.35;
+    if (k >= 0 && !nav.block[k]) t = 0.15 + 0.85 * ((nav.ground[k] - minG) / span);
+    else if (k >= 0) t = 0.05;
+    px[i] = 128 + 106 * t; px[i + 1] = 108 + 96 * t; px[i + 2] = 78 + 78 * t;
   }
 }
-// nav 遮罩：可走但仅一队能到 = 半透明；双方可达 = 淡绿
+function fillRect(c, x0, x1, z0, z1, mix) {
+  const [a, b] = toPx(x0, z1), [c2, d2] = toPx(x1, z0);
+  for (let y = Math.max(0, b); y <= Math.min(H - 1, d2); y++) for (let x = Math.max(0, a); x <= Math.min(W - 1, c2); x++) {
+    const i = (y * W + x) * 3;
+    for (let ch = 0; ch < 3; ch++) px[i + ch] = px[i + ch] * (1 - mix) + c[ch] * mix;
+  }
+}
+// 顶棚压成灰，实体按高出地面的程度加深
+for (const c of world.colliders) {
+  if (c.tag === 'roof') { fillRect([120, 128, 134], c.minX, c.maxX, c.minZ, c.maxZ, 0.3); continue; }
+  if (c.tag !== 'solid') continue;
+  const rise = c.top - S.groundAt(c.x, c.z);
+  if (rise < 0.36) continue;
+  const t = Math.min(1, rise / 6);
+  fillRect([188 - 120 * t, 160 - 104 * t, 122 - 84 * t], c.minX, c.maxX, c.minZ, c.maxZ, 0.92);
+}
+// 可达性遮罩：只有单队能到 = 醒目色，谁都到不了 = 青色
 for (let j = 0; j < nav.h; j++) for (let i = 0; i < nav.w; i++) {
-  const k = j * nav.w + i, [cx, cz] = nav.center(k);
-  if (nav.block[k] || boxAt(cx, cz)) continue;
-  const [x0, y0] = toPx(cx - nav.cell / 2, cz + nav.cell / 2);
-  const s = Math.round(nav.cell * SCALE);
+  const k = j * nav.w + i;
+  if (nav.block[k]) continue;
   const both = sets.BL[k] && sets.GR[k];
-  const col = both ? [120, 200, 120] : sets.BL[k] ? [230, 90, 70] : sets.GR[k] ? [70, 150, 230] : [60, 200, 220];
-  for (let y = y0; y < y0 + s; y++) for (let x = x0; x < x0 + s; x++) blend(x, y, col, both ? 0.12 : 0.5);
+  if (both) continue;
+  const [cx, cz] = nav.center(k);
+  const col = sets.BL[k] ? [230, 90, 70] : sets.GR[k] ? [70, 150, 230] : [60, 200, 220];
+  fillRect(col, cx - nav.cell / 2, cx + nav.cell / 2, cz - nav.cell / 2, cz + nav.cell / 2, sets.BL[k] || sets.GR[k] ? 0.4 : 0.55);
 }
 function dot(x, z, c, r = 5) {
   const [cx0, cy0] = toPx(x, z);
   for (let dy = -r - 1; dy <= r + 1; dy++) for (let dx = -r - 1; dx <= r + 1; dx++) {
-    const d = Math.hypot(dx, dy);
-    if (d <= r) set(cx0 + dx, cy0 + dy, c, 1);
-    else if (d <= r + 1.2) set(cx0 + dx, cy0 + dy, [30, 30, 30], 1);
+    const d = Math.hypot(dx, dy), xx = cx0 + dx, yy = cy0 + dy;
+    if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+    const i = (yy * W + xx) * 3;
+    const t = d <= r ? [c[0], c[1], c[2]] : d <= r + 1.2 ? [30, 30, 30] : null;
+    if (!t) continue;
+    for (let ch = 0; ch < 3; ch++) px[i + ch] = t[ch];
   }
 }
-function set(x, y, c) {
-  if (x < 0 || y < 0 || x >= W || y >= H) return;
-  const i = (y * W + x) * 3; px[i] = c[0]; px[i + 1] = c[1]; px[i + 2] = c[2];
-}
-for (const s of L.spawns.BL) dot(s.x, s.z, [225, 60, 50], 4);
-for (const s of L.spawns.GR) dot(s.x, s.z, [60, 175, 90], 4);
+for (const s of spawns.BL) dot(s.x, s.z, [225, 60, 50], 4);
+for (const s of spawns.GR) dot(s.x, s.z, [60, 175, 90], 4);
 for (const [name, a] of Object.entries(anchors)) if (!name.startsWith('spawn.')) dot(a.x, a.z, [250, 220, 40], 3);
-for (const s of L.sites || []) dot(s.x, s.z, [255, 120, 20], 8);
+for (const s of LAYOUT.sites || []) {
+  const [sx, sy] = toPx(s.x, s.z);
+  const r = Math.round(s.r * SCALE);
+  for (let a = 0; a < 360; a += 2) {
+    const x = Math.round(sx + Math.cos(a * Math.PI / 180) * r), y = Math.round(sy + Math.sin(a * Math.PI / 180) * r);
+    if (x < 0 || y < 0 || x >= W || y >= H) continue;
+    const i = (y * W + x) * 3;
+    for (let ch = 0; ch < 3; ch++) px[i + ch] = px[i + ch] * 0.4 + [255, 120, 20][ch] * 0.6;
+  }
+}
 
 const out = arg('out', `dist/floorplan-${id}.png`);
 fs.mkdirSync(path.dirname(out), { recursive: true });
 fs.writeFileSync(out, encodePng(px, W, H));
-console.log(`wrote ${out} (${W}x${H})`);
+console.log(`wrote ${out} (${W}x${H})  海拔 ${minG.toFixed(2)}~${maxG.toFixed(2)}m`);
 
 if (fail.length) { console.log('\n问题:'); for (const f of fail) console.log('  - ' + f); process.exitCode = 1; }
 else console.log('\n全部检查通过');

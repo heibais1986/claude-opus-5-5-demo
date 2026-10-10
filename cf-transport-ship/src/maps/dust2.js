@@ -1,196 +1,167 @@
-// de_dust2 地图构建：把 dust2-layout.js 的纯数据渲染成合批网格 + 碰撞体
+// de_dust2：直接渲染真实 CS2 地图几何
+// 数据来自 dust2-web/public/assets/map（collision.json 的三角面 + 每面一个穿透材质字节），
+// 由 tools/dust2-geo.mjs 量化、焊接、gzip 后内联在 ./dust2-geo.js。这里解压后按
+// 「材质 x 主朝向」分成十个合批网格；碰撞体和导航高度场出自同一次体素采样，
+// 所以视觉、物理、寻路看到的是同一份真实数据。
 import * as THREE from 'three';
 import { createBuilder } from '../mapkit.js';
-import { LAYOUT, buildBoxes } from './dust2-layout.js';
+import { decodeGeo, navField, makeSampler, addColliders, buildSpawns } from './geo.js';
+import { GEO_META, MESH_SPAWNS, MESH_LABELS } from './dust2-geo.js';
+import { LAYOUT } from './dust2-layout.js';
 
-// 布局材质 -> 碰撞材质（命中特效只区分 wood / 其他）
-const CMAT = { adobe: 'concrete', adobeDark: 'concrete', door: 'wood', crate: 'wood', wood: 'wood', stone: 'concrete', barrel: 'metal', truck: 'metal', container: 'metal', metal: 'metal' };
-// 布局材质 -> 外观材质（未列出的一律走土砖墙）
-const SIDE = { door: 'door', wood: 'wood', crate: 'crate', stone: 'stone', metal: 'metal', container: 'container', truck: 'metal', adobeDark: 'adobeDark' };
-// 可以站上去的台面用石板顶，其余用压顶石
-const FLAT_TOP = new Set(['dais', 'catwalk', 'scaffold', 'pit', 'low']);
+// 桶序：混凝土（平/仰/东西墙/南北墙）、木（平/东西/南北）、金属（平/东西/南北）
+// 同一桶内的面朝向一致，才能用同一套平面投影 UV（UV 直接取世界坐标 / tile）
+const BUCKETS = [
+  { key: 'sand', tex: 'sand', tile: 5, proj: 'H', color: 0xffffff, rough: 1, metal: 0, nsc: 0.7, cast: false },
+  { key: 'ceil', tex: 'adobe', tile: 3, proj: 'H', color: 0x8b7f6b, rough: 1, metal: 0, nsc: 1, cast: false },
+  { key: 'wallE', tex: 'adobe', tile: 3, proj: 'X', color: 0xf4e8ce, rough: 0.95, metal: 0, nsc: 1.1, cast: true },
+  { key: 'wallN', tex: 'adobe', tile: 3, proj: 'Z', color: 0xffffff, rough: 0.95, metal: 0, nsc: 1.1, cast: true },
+  { key: 'woodU', tex: 'crate', tile: 1, proj: 'H', color: 0xffffff, rough: 0.85, metal: 0.02, nsc: 1, cast: true },
+  { key: 'woodE', tex: 'crate', tile: 1, proj: 'X', color: 0xb6946a, rough: 0.9, metal: 0, nsc: 1, cast: true },
+  { key: 'woodN', tex: 'crate', tile: 1, proj: 'Z', color: 0xc9a87c, rough: 0.9, metal: 0, nsc: 1, cast: true },
+  { key: 'metalU', tex: 'metal', tile: 1.2, proj: 'H', color: 0xffffff, rough: 0.68, metal: 0.38, nsc: 1, cast: true },
+  { key: 'metalE', tex: 'metal', tile: 1.2, proj: 'X', color: 0xc2bba7, rough: 0.66, metal: 0.42, nsc: 1, cast: true },
+  { key: 'metalN', tex: 'metal', tile: 1.2, proj: 'Z', color: 0xd0c9b4, rough: 0.66, metal: 0.42, nsc: 1, cast: true },
+];
 
-export function buildDust2(scene, T, world) {
+function bucketOf(mt, nx, ny, nz) {
+  const w = Math.abs(nx) > Math.abs(nz) ? 1 : 2;   // 1 朝东/西，2 朝南/北
+  if (mt === 1) return Math.abs(ny) > 0.5 ? 4 : 4 + w;
+  if (mt === 2) return Math.abs(ny) > 0.5 ? 7 : 7 + w;
+  return Math.abs(ny) > 0.5 ? (ny > 0 ? 0 : 1) : 1 + w;
+}
+
+async function buildDust2(scene, T, world) {
+  const G = await decodeGeo();
   const kb = createBuilder(scene, T, world, 7731);
-  const { matDefs, lampSpots, anim, std, defMat, box, solid, geom, rod, flush, cylG, cylG8, sphG } = kb;
+  const { matDefs, lampSpots, anim, std, defMat, rod, geom, flush, cylG8, sphG } = kb;
   const D = T.desert;
 
-  defMat('sand', std({ map: D.sand.map, normalMap: D.sand.normalMap, roughnessMap: D.sand.roughnessMap, roughness: 1, metalness: 0, normalScale: new THREE.Vector2(0.7, 0.7), envMapIntensity: 0.35 }), 5, { shadow: false });
-  defMat('farGround', std({ color: 0xc2a473, roughness: 1, metalness: 0, fog: true }), 40, { shadow: false });
-  defMat('adobe', std({ map: D.adobe.map, normalMap: D.adobe.normalMap, roughness: 0.95, metalness: 0, normalScale: new THREE.Vector2(1.1, 1.1) }), 3);
-  defMat('adobeDark', std({ map: D.adobe.map, color: 0xb8ab92, normalMap: D.adobe.normalMap, roughness: 0.95, metalness: 0 }), 3);
-  defMat('cap', std({ map: D.stone.map, normalMap: D.stone.normalMap, roughness: 0.9, metalness: 0 }), 2);
-  defMat('stone', std({ map: D.stone.map, normalMap: D.stone.normalMap, roughness: 0.92, metalness: 0, normalScale: new THREE.Vector2(0.9, 0.9) }), 1.6);
-  defMat('crate', std({ map: D.crate.map, normalMap: D.crate.normalMap, roughness: 0.85, metalness: 0.02 }), 1);
-  defMat('wood', std({ map: D.crate.map, color: 0xa8855c, normalMap: D.crate.normalMap, roughness: 0.9, metalness: 0 }), 1);
-  defMat('door', std({ map: D.door.map, normalMap: D.door.normalMap, roughness: 0.8, metalness: 0.05 }), 'unit');
-  defMat('metal', std({ map: D.metal.map, normalMap: D.metal.normalMap, roughness: 0.7, metalness: 0.35 }), 1.2);
-  defMat('container', std({ map: D.metal.map, color: 0x3f7f9e, normalMap: D.metal.normalMap, roughness: 0.68, metalness: 0.4 }), 1.4);
-  defMat('truckTop', std({ map: D.metal.map, color: 0xb08a5a, normalMap: D.metal.normalMap, roughness: 0.75, metalness: 0.3 }), 1.2);
-  defMat('black', std({ color: 0x23201c, roughness: 0.9, metalness: 0.05 }), 1);
+  const mats = BUCKETS.map((b) => {
+    const src = b.tex === 'sand' ? D.sand : b.tex === 'adobe' ? D.adobe : b.tex === 'crate' ? D.crate : D.metal;
+    return std({
+      map: src.map, normalMap: src.normalMap, roughnessMap: src.roughnessMap,
+      color: b.color, roughness: b.rough, metalness: b.metal,
+      normalScale: new THREE.Vector2(b.nsc, b.nsc),
+      envMapIntensity: b.metal ? 0.7 : 0.32,
+      // 硬边砖块：平面投影 UV 下棱角处的插值法线会糊成圆角，直接按面法线着色
+      flatShading: true,
+    });
+  });
+  for (let i = 0; i < BUCKETS.length; i++) defMat(BUCKETS[i].key, mats[i], 'unit', { shadow: BUCKETS[i].cast });
+  defMat('black', std({ color: 0x24211c, roughness: 0.9, metalness: 0.05 }), 1);
   defMat('lamp', std({ color: 0xfff2d0, emissive: 0xffe2a8, emissiveIntensity: 3.5, roughness: 0.3 }), 1, { shadow: false });
 
-  // ---------- 地面 ----------
-  box(0, -0.25, 0, LAYOUT.ground.w, 0.5, LAYOUT.ground.d, 0, { py: 'sand' });
-  solid(0, -0.25, 0, LAYOUT.ground.w, 0.5, LAYOUT.ground.d, 0, { mat: 'concrete', surface: 'sand', tag: 'ground' });
-  // 远处的沙地，避免从高处看到空洞
-  box(0, -0.4, 0, 1400, 0.4, 1400, 0, { py: 'farGround' });
+  // ---------- 导航高度场：碰撞体、出生点、灯柱都靠它落到真实地面 ----------
+  const S = makeSampler(G);
 
-  // ---------- 主体盒子 ----------
-  for (const bx of buildBoxes()) {
-    const cy = bx.y + bx.h / 2;
-    const side = SIDE[bx.mat] || (bx.kind === 'perim' ? 'adobeDark' : 'adobe');
-    const topKey = FLAT_TOP.has(bx.kind) ? 'stone' : bx.kind === 'roof' ? 'adobeDark' : 'cap';
-    if (bx.kind === 'barrel') barrels(bx);
-    else if (bx.mat === 'truck') truck(bx);
-    else if (bx.kind === 'container') container(bx);
-    else if (bx.kind === 'fence') fence(bx);
-    else {
-      box(bx.x, cy, bx.z, bx.w, bx.h, bx.d, bx.yaw, {
-        px: side, nx: side, pz: side, nz: side, py: bx.top !== false ? topKey : null,
-      });
-    }
-    if (bx.solid !== false) {
-      solid(bx.x, cy, bx.z, bx.w, bx.h, bx.d, bx.yaw, {
-        mat: CMAT[bx.mat] || 'concrete', bullet: bx.bullet, sight: bx.sight, surface: 'sand', tag: bx.kind,
-      });
-    }
+  // ---------- 真实三角面：反量化 + 平滑法线 + 分桶 ----------
+  const M = GEO_META;
+  const nV = M.nVerts, NT = M.nTris;
+  const [ox, oy, oz] = M.origin, [qx, qy, qz] = M.scale;
+  const pos = new Float32Array(nV * 3), nrm = new Float32Array(nV * 3);
+  for (let i = 0; i < nV; i++) {
+    pos[i * 3] = ox + G.verts[i * 3] * qx;
+    pos[i * 3 + 1] = oy + G.verts[i * 3 + 1] * qy;
+    pos[i * 3 + 2] = oz + G.verts[i * 3 + 2] * qz;
   }
-
-  // 油桶簇：一个碰撞盒，视觉上是若干个圆桶
-  function barrels(bx) {
-    const nx = Math.max(1, Math.round(bx.w / 0.62)), nz = Math.max(1, Math.round(bx.d / 0.62));
-    let i = 0;
-    for (let a = 0; a < nx; a++) for (let b = 0; b < nz; b++) {
-      if (i >= 4) break;
-      const lx = (a - (nx - 1) / 2) * 0.6, lz = (b - (nz - 1) / 2) * 0.6;
-      const c = Math.cos(bx.yaw), s = Math.sin(bx.yaw);
-      const x = bx.x + c * lx + s * lz, z = bx.z - s * lx + c * lz;
-      const h = bx.h * (0.88 + (i % 3) * 0.06);
-      geom('metal', cylG, x, bx.y + h / 2, z, 0, i * 0.7, 0, 0.27, h, 0.27);
-      geom('black', cylG, x, bx.y + h - 0.015, z, 0, i * 0.7, 0, 0.26, 0.03, 0.26);
-      for (const ry of [0.22, 0.62]) geom('black', cylG, x, bx.y + h * ry, z, 0, 0, 0, 0.28, 0.035, 0.28);
-      i++;
-    }
+  const bkt = new Uint8Array(NT), cnt = new Int32Array(BUCKETS.length);
+  for (let t = 0; t < NT; t++) {
+    const i0 = G.idx[t * 3], i1 = G.idx[t * 3 + 1], i2 = G.idx[t * 3 + 2];
+    const a = i0 * 3, b = i1 * 3, c = i2 * 3;
+    const ux = pos[b] - pos[a], uy = pos[b + 1] - pos[a + 1], uz = pos[b + 2] - pos[a + 2];
+    const vx = pos[c] - pos[a], vy = pos[c + 1] - pos[a + 1], vz = pos[c + 2] - pos[a + 2];
+    let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const len = Math.hypot(nx, ny, nz) || 1;
+    nx /= len; ny /= len; nz /= len;
+    for (const v of [a, b, c]) { nrm[v] += nx; nrm[v + 1] += ny; nrm[v + 2] += nz; }
+    const k = bucketOf(G.mat[t], nx, ny, nz);
+    bkt[t] = k; cnt[k]++;
   }
-  // 卡车：车厢 + 驾驶楼 + 轮子
-  function truck(bx) {
-    const c = Math.cos(bx.yaw), s = Math.sin(bx.yaw);
-    const put = (lx, lz) => [bx.x + c * lx + s * lz, bx.z - s * lx + c * lz];
-    const L = Math.max(bx.w, bx.d), alongX = bx.w >= bx.d;
-    const bodyH = bx.h * 0.78;
-    const [bx1, bz1] = put(-L * 0.12, 0);
-    box(bx1, bx.y + bodyH / 2, bz1, alongX ? L * 0.76 : bx.d, bodyH, alongX ? bx.w : L * 0.76, bx.yaw, 'metal');
-    const [cx1, cz1] = put(L * 0.36, 0);
-    box(cx1, bx.y + bx.h * 0.3, cz1, alongX ? L * 0.22 : bx.d * 0.9, bx.h * 0.6, alongX ? bx.w * 0.9 : L * 0.22, bx.yaw, {
-      px: 'truckTop', nx: 'truckTop', pz: 'truckTop', nz: 'truckTop', py: 'truckTop',
-    });
-    for (const sx of [-0.32, 0.36]) for (const sz of [-0.5, 0.5]) {
-      const [wx, wz] = put(sx * L, sz * (alongX ? bx.w : L) * 0.5);
-      // 轮轴水平且垂直于车身朝向
-      geom('black', cylG, wx, bx.y + 0.34, wz, alongX ? Math.PI / 2 : 0, 0, alongX ? 0 : Math.PI / 2, 0.34, 0.24, 0.34);
-    }
+  for (let i = 0; i < nV; i++) {
+    const l = Math.hypot(nrm[i * 3], nrm[i * 3 + 1], nrm[i * 3 + 2]) || 1;
+    nrm[i * 3] /= l; nrm[i * 3 + 1] /= l; nrm[i * 3 + 2] /= l;
   }
-
-  // 蓝色集装箱：波纹侧板 + 顶部角件（A Main 入口的招牌掩体）
-  function container(bx) {
-    box(bx.x, bx.y + bx.h / 2, bx.z, bx.w, bx.h, bx.d, bx.yaw, 'container');
-    box(bx.x, bx.y + bx.h + 0.04, bx.z, bx.w * 0.96, 0.08, bx.d * 0.96, bx.yaw, 'black');
-    const c = Math.cos(bx.yaw), s = Math.sin(bx.yaw);
-    const alongX = bx.w >= bx.d, L = Math.max(bx.w, bx.d);
-    const n = Math.max(3, Math.round(L / 0.85));
-    for (let i = 0; i <= n; i++) {
-      const t = -L / 2 + (L * i) / n;
-      for (const v of [-1, 1]) {
-        const lx = alongX ? t : (v * bx.w) / 2, lz = alongX ? (v * bx.d) / 2 : t;
-        box(bx.x + c * lx + s * lz, bx.y + bx.h * 0.52, bx.z - s * lx + c * lz,
-          alongX ? 0.1 : 0.44, bx.h * 0.88, alongX ? 0.44 : 0.1, bx.yaw, 'container');
+  // 位置与法线在十个几何体之间共享，只有 UV 和索引按桶分开
+  const posAttr = new THREE.BufferAttribute(pos, 3);
+  const nrmAttr = new THREE.BufferAttribute(nrm, 3);
+  const meshes = [];
+  for (let k = 0; k < BUCKETS.length; k++) {
+    const n = cnt[k];
+    if (!n) continue;
+    const B = BUCKETS[k], tile = B.tile;
+    const uv = new Float32Array(nV * 2);
+    const index = new Uint32Array(n * 3);
+    let p = 0;
+    for (let t = 0; t < NT; t++) {
+      if (bkt[t] !== k) continue;
+      const i0 = G.idx[t * 3], i1 = G.idx[t * 3 + 1], i2 = G.idx[t * 3 + 2];
+      index[p++] = i0; index[p++] = i1; index[p++] = i2;
+      for (const i of [i0, i1, i2]) {
+        const x = pos[i * 3], y = pos[i * 3 + 1], z = pos[i * 3 + 2];
+        uv[i * 2] = (B.proj === 'Z' ? x : B.proj === 'X' ? z : x) / tile;
+        uv[i * 2 + 1] = (B.proj === 'H' ? z : y) / tile;
       }
     }
-  }
-  // 铁丝网围栏：立柱加横杆，视觉上可穿、碰撞与子弹穿透照旧
-  function fence(bx) {
-    const c = Math.cos(bx.yaw), s = Math.sin(bx.yaw);
-    const alongX = bx.w >= bx.d, L = Math.max(bx.w, bx.d);
-    const n = Math.max(2, Math.round(L / 1.4));
-    for (let i = 0; i <= n; i++) {
-      const t = -L / 2 + (L * i) / n;
-      const lx = alongX ? t : 0, lz = alongX ? 0 : t;
-      geom('black', cylG8, bx.x + c * lx + s * lz, bx.y + bx.h / 2, bx.z - s * lx + c * lz, 0, 0, 0, 0.05, bx.h, 0.05);
-    }
-    for (const f of [0.35, 0.72, 0.98]) {
-      box(bx.x, bx.y + bx.h * f, bx.z, alongX ? L : 0.07, 0.06, alongX ? 0.07 : L, bx.yaw, 'metal');
-    }
-  }
-
-  // ---------- 门楼拱门 ----------
-  for (const a of LAYOUT.arches) {
-    const piers = a.axis === 'z' ? [[a.x, a.z - 3], [a.x, a.z + 3]] : [[a.x - 3, a.z], [a.x + 3, a.z]];
-    for (const [px, pz] of piers) {
-      box(px, 2.2, pz, 1.0, 4.4, 1.0, 0, 'stone');
-      solid(px, 2.2, pz, 1.0, 4.4, 1.0, 0, { mat: 'concrete', surface: 'sand', tag: 'arch' });
-      geom('cap', cylG8, px, 4.5, pz, 0, 0, 0, 0.62, 0.22, 0.62);
-    }
-    const lw = a.axis === 'z' ? 1.2 : 7.2, ld = a.axis === 'z' ? 7.2 : 1.2;
-    box(a.x, 4.95, a.z, lw, 0.7, ld, 0, 'stone');
-    solid(a.x, 4.95, a.z, lw, 0.7, ld, 0, { mat: 'concrete', surface: 'sand', tag: 'arch' });
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', posAttr);
+    g.setAttribute('normal', nrmAttr);
+    g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    g.setIndex(new THREE.BufferAttribute(index, 1));
+    g.computeBoundingSphere();
+    const mesh = new THREE.Mesh(g, mats[k]);
+    mesh.castShadow = B.cast;
+    mesh.receiveShadow = true;
+    mesh.matrixAutoUpdate = false; mesh.updateMatrix();
+    mesh.name = B.key;
+    scene.add(mesh);
+    meshes.push(mesh);
   }
 
-  // ---------- 灯柱 ----------
-  for (const lp of LAYOUT.lamps) {
-    rod('black', lp.x, 0, lp.z, lp.x, 4.6, lp.z, 0.07);
-    geom('black', cylG8, lp.x, 0.06, lp.z, 0, 0, 0, 0.24, 0.12, 0.24);
-    box(lp.x, 4.72, lp.z, 0.5, 0.16, 0.5, 0, 'black');
-    geom('lamp', sphG, lp.x, 4.5, lp.z, 0, 0, 0, 0.17, 0.17, 0.17);
-    lampSpots.push(new THREE.Vector3(lp.x, 4.5, lp.z));
+  // ---------- 碰撞体 + 世界夹：与离线校验共用同一套装配 ----------
+  addColliders(world, G, LAYOUT.bounds, S);
+
+  // ---------- 灯柱：报点上空，地面能站人时才立 ----------
+  for (const l of MESH_LABELS) {
+    const p = S.freeNear(l.x, l.z);
+    if (!p) continue;
+    rod('black', p.x, p.y, p.z, p.x, p.y + 4.6, p.z, 0.07);
+    geom('black', cylG8, p.x, p.y + 0.06, p.z, 0, 0, 0, 0.24, 0.12, 0.24);
+    geom('lamp', sphG, p.x, p.y + 4.5, p.z, 0, 0, 0, 0.17, 0.17, 0.17);
+    lampSpots.push(new THREE.Vector3(p.x, p.y + 4.5, p.z));
   }
 
-  world.build();
-  const meshes = flush();
+  meshes.push(...flush());
+
+  // 出生点取自 Valve 官方点位，高度用导航场实测地面
   const yaw = LAYOUT.spawnYaw;
   return {
     spawns: {
-      BL: LAYOUT.spawns.BL.map((p) => ({ ...p, yaw: yaw.BL })),
-      GR: LAYOUT.spawns.GR.map((p) => ({ ...p, yaw: yaw.GR })),
+      BL: buildSpawns(MESH_SPAWNS.T, 10, yaw.BL, S),
+      GR: buildSpawns(MESH_SPAWNS.CT, 10, yaw.GR, S),
     },
     lampSpots, meshes, materials: matDefs,
+    nav: { ...LAYOUT.nav, field: navField(G) },
     update(dt, t) { for (const f of anim) f(dt, t); },
   };
 }
-
-const ROOFS = LAYOUT.walls.filter((w) => w.kind === 'roof').map((r) => ({ x: r.x, z: r.z, w: r.w, d: r.d }));
-const N = Math.PI;   // 朝北（+Z）
-const S = 0;         // 朝南（-Z）
-// bot 路线图：不对称地图不能再用「己方坐标取反」，两套目标点直接给世界坐标
-const BOT = {
-  BL: {
-    lanes: [[23, -30], [-3, -14], [-39, -20]],              // 早期占线：长道 / 中路 / 地道
-    flank: [[-39, -20], [-39, 10], [-32, 40]],               // 绕地道打 B 点
-    holds: [[27, -14, N], [-8, 10, N], [-39, 6, N], [40, 38, S], [6, 26, S]],
-    sites: [[40, 38], [43, 42], [30, 22], [-36, 41], [-34, 43]],
-  },
-  GR: {
-    lanes: [[-24, 26], [-2, 20], [40, 40]],                  // 回防：B 门 / 中路门后 / A 点
-    flank: [[-34, 43], [-39, 10], [-39, -14]],               // 从 B 反压地道口
-    holds: [[-5, 17, N], [43, 39, S], [-34, 43, S], [28, 24, S]],
-    sites: [[40, 40], [43, 39], [28, 24], [-42, 40], [-34, 43], [-5, 17]],
-  },
-};
 
 export const dust2Map = {
   id: 'dust2',
   name: '沙漠灰城',
   en: 'DE_DUST2',
   brief: '三条进攻线：长道、中路、地道，A 点在东北，B 点在西北',
-  story: '北非某座被战争遗忘的土城，格局完全照搬经典 de_dust2：潜伏者在南场出生，保卫者在东北出生，A 包点在东北、B 包点在西北。<br>从南场出来有三条路：<b>长道</b>沿东侧一路向北，经长道双门打进 A Main 直取 A 点；<b>中路</b>穿过土城正中的走廊，撞开那两扇半开的破门，再经 Xbox 拐角和高台（Catwalk）摸向 A 小；<b>地道</b>从西侧拱门钻进去，头顶压着棚子，一路向北出口直通 B 点，中途还在中路双门西侧开了一个俗称「窗口」的拱洞。整张图不对称：保卫者两个包点都近，潜伏者必须先决定走哪条线。',
-  tip: '小提示：三处木门都能穿子弹，先扫门板再冲；A 点的箱堆可以两级跳上去架枪，B 点那辆废弃卡车和平台木箱同理。中路高台是双向通道，谁先站住谁两头都能支援。',
+  story: LAYOUT.story,
+  tip: LAYOUT.tip,
   textures: ['desert'],
   tod: [{ v: 'day', label: '白天' }, { v: 'dusk', label: '黄昏' }],
   sea: false,
+  // 真实地形最低的地面是长道门 -4.41，再往下就是掉出地图
+  voidY: -5.5,
   nav: LAYOUT.nav,
-  bot: BOT,
+  bot: LAYOUT.bot,
   shadowBox: LAYOUT.shadowBox,
-  radar: { halfW: 56, halfH: 56, overlays: ROOFS },
-  orbit: { cx: 0, cz: 0, rx: 76, rz: 76, y: 54, look: [0, 2, 0] },
+  radar: { halfW: 56, halfH: 56, overlays: [] },
+  orbit: { cx: 0, cz: 0, rx: 78, rz: 82, y: 58, look: [0, 2, 0] },
   build: buildDust2,
 };

@@ -941,12 +941,13 @@ export class AudioSystem {
     }
   }
 
-  startAmbient() {
+  // 环境音床按地图分套：sea=true 是运输船（海浪/引擎/海鸥），否则是沙漠（只有贴地卷沙的风）
+  startAmbient(sea = true) {
     if (!this._ok()) return;
     try {
       const c = this.ctx, now = c.currentTime;
       const cur = this._amb;
-      if (cur) {
+      if (cur && cur.sea === sea) {
         if (cur.stopping) {
           // 正在淡出时再次开启：取消销毁并淡回
           cur.stopping = false;
@@ -958,7 +959,8 @@ export class AudioSystem {
         }
         return;
       }
-      const a = { srcs: [], nodes: [], stopping: false, timer: 0 };
+      if (cur) this._killAmb(cur); // 换图重开：主题不同就必须拆掉旧音床，淡回来的会是上一张图的声音
+      const a = { srcs: [], nodes: [], stopping: false, timer: 0, sea };
       const node = (n) => (a.nodes.push(n), n);
       const gain = (val) => {
         const g = node(c.createGain());
@@ -1010,34 +1012,11 @@ export class AudioSystem {
       out.gain.linearRampToValueAtTime(1, now + 3);
       a.out = out;
 
-      // 海浪：褐噪声 + 慢速 LFO 起伏（左右两层，速率不同）
-      for (const side of [-0.65, 0.65]) {
-        const s = loop('brown', rand(0.85, 1.15));
-        const lp = biq('lowpass', rand(550, 750), 0);
-        const g = gain(0.1);
-        lfo(rand(0.055, 0.1), 0.065, g.gain);
-        lfo(rand(0.04, 0.08), 300, lp.frequency);
-        const p = pan(side);
-        s.connect(lp);
-        lp.connect(g);
-        g.connect(p);
-        p.connect(out);
-      }
-      // 浪花泡沫嘶声
+      // 风：带通噪声，阵风由 _tick 调度。海运场景是海风，沙漠则是贴地卷沙
       {
-        const s = loop('pink');
-        const bp = biq('bandpass', 1300, 0.6);
-        const g = gain(0.03);
-        lfo(0.083, 0.025, g.gain);
-        s.connect(bp);
-        bp.connect(g);
-        g.connect(out);
-      }
-      // 海风：带通噪声，阵风由 _tick 调度
-      {
-        const s = loop('pink', 0.9);
-        const bp = biq('bandpass', 520, 1.1);
-        const g = gain(0.06);
+        const s = loop('pink', sea ? 0.9 : 0.7);
+        const bp = biq('bandpass', sea ? 520 : 300, sea ? 1.1 : 0.7);
+        const g = gain(sea ? 0.06 : 0.05);
         lfo(0.047, 110, bp.frequency);
         lfo(0.031, 0.02, g.gain);
         const p = pan(0);
@@ -1048,42 +1027,85 @@ export class AudioSystem {
         p.connect(out);
         a.windG = g;
         a.windBP = bp;
-        a.windBase = 0.06;
-        a.windF = 520;
+        a.windBase = g.gain.value;
+        a.windF = bp.frequency.value;
       }
-      // 柴油主机：40~60Hz 基频及谐波，缓慢抖动 + 燃烧节拍调幅
-      {
-        const f0 = rand(46, 52);
-        const eng = gain(0.05);
-        const lp = biq('lowpass', 260, 0);
-        eng.connect(lp);
-        lp.connect(out);
-        const j1 = osc('sine', 0.17), j2 = osc('sine', 0.43);
-        for (const [type, h, amp] of [['sine', 1, 0.55], ['sine', 2.003, 0.35], ['triangle', 3, 0.16], ['sine', 4.01, 0.08], ['sawtooth', 0.5, 0.1]]) {
-          const o = osc(type, f0 * h);
-          const jg1 = gain(0.35 * h), jg2 = gain(0.2 * h);
-          j1.connect(jg1);
-          jg1.connect(o.frequency);
-          j2.connect(jg2);
-          jg2.connect(o.frequency);
-          const g = gain(amp);
-          o.connect(g);
-          g.connect(eng);
+      if (!sea) {
+        // 沙漠：远处滚沙的低频隆隆 + 贴着地面的细沙嘶声
+        const s = loop('brown', 0.6);
+        const lp = biq('lowpass', 140, 0);
+        const g = gain(0.07);
+        lfo(0.037, 0.035, g.gain);
+        s.connect(lp);
+        lp.connect(g);
+        g.connect(out);
+        const h = loop('pink', 1.4);
+        const hp = biq('highpass', 2400, 0.4);
+        const hg = gain(0.014);
+        lfo(0.061, 0.009, hg.gain);
+        h.connect(hp);
+        hp.connect(hg);
+        hg.connect(out);
+      } else {
+        // 海浪：褐噪声 + 慢速 LFO 起伏（左右两层，速率不同）
+        for (const side of [-0.65, 0.65]) {
+          const s = loop('brown', rand(0.85, 1.15));
+          const lp = biq('lowpass', rand(550, 750), 0);
+          const g = gain(0.1);
+          lfo(rand(0.055, 0.1), 0.065, g.gain);
+          lfo(rand(0.04, 0.08), 300, lp.frequency);
+          const p = pan(side);
+          s.connect(lp);
+          lp.connect(g);
+          g.connect(p);
+          p.connect(out);
         }
-        lfo(f0 / 4.5, 0.012, eng.gain); // 约 11Hz 燃烧节拍
-        const s = loop('brown', 0.7); // 船体低频隆隆
-        const rl = biq('lowpass', 90, 0);
-        const rg = gain(0.5);
-        s.connect(rl);
-        rl.connect(rg);
-        rg.connect(eng);
+        // 浪花泡沫嘶声
+        {
+          const s = loop('pink');
+          const bp = biq('bandpass', 1300, 0.6);
+          const g = gain(0.03);
+          lfo(0.083, 0.025, g.gain);
+          s.connect(bp);
+          bp.connect(g);
+          g.connect(out);
+        }
+        // 柴油主机：40~60Hz 基频及谐波，缓慢抖动 + 燃烧节拍调幅
+        {
+          const f0 = rand(46, 52);
+          const eng = gain(0.05);
+          const lp = biq('lowpass', 260, 0);
+          eng.connect(lp);
+          lp.connect(out);
+          const j1 = osc('sine', 0.17), j2 = osc('sine', 0.43);
+          for (const [type, h, amp] of [['sine', 1, 0.55], ['sine', 2.003, 0.35], ['triangle', 3, 0.16], ['sine', 4.01, 0.08], ['sawtooth', 0.5, 0.1]]) {
+            const o = osc(type, f0 * h);
+            const jg1 = gain(0.35 * h), jg2 = gain(0.2 * h);
+            j1.connect(jg1);
+            jg1.connect(o.frequency);
+            j2.connect(jg2);
+            jg2.connect(o.frequency);
+            const g = gain(amp);
+            o.connect(g);
+            g.connect(eng);
+          }
+          lfo(f0 / 4.5, 0.012, eng.gain); // 约 11Hz 燃烧节拍
+          const s = loop('brown', 0.7); // 船体低频隆隆
+          const rl = biq('lowpass', 90, 0);
+          const rg = gain(0.5);
+          s.connect(rl);
+          rl.connect(rg);
+          rg.connect(eng);
+        }
       }
-      // 随机事件时间表
+      // 随机事件时间表：海鸥/船体吱嘎/滴水/汽笛只属于船
       a.nGust = now + rand(3, 8);
-      a.nGull = now + rand(3, 9);
-      a.nCreak = now + rand(6, 15);
-      a.nSplash = now + rand(2, 6);
-      a.nHorn = now + rand(30, 70);
+      if (sea) {
+        a.nGull = now + rand(3, 9);
+        a.nCreak = now + rand(6, 15);
+        a.nSplash = now + rand(2, 6);
+        a.nHorn = now + rand(30, 70);
+      }
       this._amb = a;
     } catch (e) {
       this._warn('startAmbient', e);
@@ -1100,22 +1122,29 @@ export class AudioSystem {
       g.cancelScheduledValues(now);
       g.setValueAtTime(g.value, now);
       g.linearRampToValueAtTime(0, now + 1.5); // 淡出
-      const kill = () => {
-        if (!a.stopping) return;
-        for (const s of a.srcs) {
-          try { s.stop(); } catch (_) { /* 已停止 */ }
-          try { s.disconnect(); } catch (_) { /* 忽略 */ }
-        }
-        for (const n of a.nodes) try { n.disconnect(); } catch (_) { /* 忽略 */ }
-        a.srcs.length = 0;
-        a.nodes.length = 0;
-        if (this._amb === a) this._amb = null;
-      };
+      const kill = () => { if (a.stopping) this._killAmb(a); };
       if (typeof setTimeout === 'function') a.timer = setTimeout(kill, 1700);
       else kill();
     } catch (e) {
       this._warn('stopAmbient', e);
     }
+  }
+
+  // 拆掉一套音床：停源、断连、清淡出定时器。换图重开与淡出结束都走这里。
+  _killAmb(a) {
+    if (!a) return;
+    if (a.timer) {
+      if (typeof clearTimeout === 'function') clearTimeout(a.timer);
+      a.timer = 0;
+    }
+    for (const s of a.srcs) {
+      try { s.stop(); } catch (_) { /* 已停止 */ }
+      try { s.disconnect(); } catch (_) { /* 忽略 */ }
+    }
+    for (const n of a.nodes) try { n.disconnect(); } catch (_) { /* 忽略 */ }
+    a.srcs.length = 0;
+    a.nodes.length = 0;
+    if (this._amb === a) this._amb = null;
   }
 
   update(dt) {
@@ -1684,10 +1713,12 @@ export class AudioSystem {
       const a = this._amb;
       if (a && !a.stopping) {
         if (now >= a.nGust) { this._gust(a, now); a.nGust = now + rand(5, 14); }
-        if (now >= a.nGull) { this._gulls(); a.nGull = now + rand(7, 22); }
-        if (now >= a.nCreak) { this._creak(); a.nCreak = now + rand(9, 26); }
-        if (now >= a.nSplash) { this._splash(); a.nSplash = now + rand(3, 9); }
-        if (now >= a.nHorn) { this._horn(); a.nHorn = now + rand(80, 180); }
+        if (a.sea) {
+          if (now >= a.nGull) { this._gulls(); a.nGull = now + rand(7, 22); }
+          if (now >= a.nCreak) { this._creak(); a.nCreak = now + rand(9, 26); }
+          if (now >= a.nSplash) { this._splash(); a.nSplash = now + rand(3, 9); }
+          if (now >= a.nHorn) { this._horn(); a.nHorn = now + rand(80, 180); }
+        }
       }
     } catch (e) {
       this._warn('update', e);

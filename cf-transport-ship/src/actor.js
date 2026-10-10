@@ -41,7 +41,7 @@ export class Actor {
     this.soldier.setWeapon(this.primary);
   }
   spawn(sp) {
-    this.pos.set(sp.x, 0.02, sp.z); this.vel.set(0, 0, 0);
+    this.pos.set(sp.x, (sp.y ?? 0) + 0.02, sp.z); this.vel.set(0, 0, 0);
     this.yaw = sp.yaw; this.pitch = 0; this.punchP = this.punchY = 0;
     this.hp = 100; this.armor = 100; this.alive = true; this.deadT = 0;
     this.crouch = false; this.height = STAND_H; this.eyeH = EYE_STAND;
@@ -120,8 +120,24 @@ export class Actor {
       if (this.stepDist > 2.3) { this.stepDist = 0; g.onFootstep(this); }
     }
     void wasGround;
-    // 防卡死：掉出世界
-    if (this.pos.y < -3) { this.pos.y = 0.1; this.vel.set(0, 0, 0); }
+    // 防卡死：掉出世界。阈值按地图给（dust2 的 CT 出生点本身就在 -3.2），
+    // 兜底要吸回导航地面，随便给个 y 会把人塞进实体里，物理再把他挤出地板→无限下坠。
+    const voidY = g.def && g.def.voidY !== undefined ? g.def.voidY : -3;
+    if (this.pos.y < voidY) this.recoverFromVoid(g, voidY);
+  }
+  recoverFromVoid(g, voidY) {
+    const nav = g.nav;
+    let k = nav ? nav.idx(this.pos.x, this.pos.z) : -1;
+    if (k >= 0 && nav.block[k]) k = nav.nearestFree(k);
+    if (k >= 0) {
+      const [cx, cz] = nav.center(k);
+      this.pos.set(cx, nav.ground[k] + 0.02, cz);
+    } else {
+      this.pos.y = voidY + 1;
+      this.vel.set(0, 0, 0);
+    }
+    this.vel.set(0, 0, 0);
+    this.onGround = true;
   }
   // 武器逻辑。inp: {fire, firePressed, alt, altPressed, reload, sw}
   weaponUpdate(dt, inp) {

@@ -238,21 +238,39 @@ export class HUD {
     this.el.endTable.innerHTML = `<div class="cols">${tbl('BL')}${tbl('GR')}</div>`;
   }
   // ---------- 小地图 ----------
-  buildRadar(world, def) {
+  buildRadar(world, def, groundAt) {
     const S = 8; // px/m
     const hw = def.radar.halfW, hh = def.radar.halfH;
     const W = hw * 2 * S, H = hh * 2 * S;
     const c = document.createElement('canvas'); c.width = W; c.height = H;
     const x = c.getContext('2d');
     x.fillStyle = 'rgba(70,80,84,0.95)'; x.fillRect(0, 0, W, H);
-    const cols = [...world.colliders].filter((k) => k.solid && k.top > 0.3 && k.bottom < 2 && k.hx < 30 && k.tag !== 'deck').sort((a, b) => a.top - b.top);
-    for (const k of cols) {
+    const gy = groundAt || (() => 0);
+    // 顶棚（dust2 的屋檐、运输船的管道顶）压一层浅色，表示「头顶有遮挡」
+    for (const k of world.colliders) {
+      if (!k.solid || k.tag !== 'roof') continue;
+      x.save();
+      x.translate((k.x + hw) * S, (k.z + hh) * S); x.rotate(-k.yaw);
+      x.fillStyle = 'rgba(150,160,165,.26)';
+      x.fillRect(-k.hx * S, -k.hz * S, k.hx * 2 * S, k.hz * 2 * S);
+      x.restore();
+    }
+    // 墙体按「当地地面以上的相对高度」分层：真实地图地面本身有起伏，绝对 y 没有意义
+    const cols = [];
+    for (const k of world.colliders) {
+      if (!k.solid || k.hx > 30 || k.tag === 'roof') continue;
       if (k.bullet === 'pass' && k.mat !== 'mesh') continue;
+      const g = gy(k.x, k.z);
+      const rise = k.top - g;
+      if (rise < 0.36 || k.bottom > g + 2) continue;
+      cols.push([k, rise]);
+    }
+    cols.sort((a, b) => a[1] - b[1]);
+    for (const [k, rise] of cols) {
       x.save();
       x.translate((k.x + hw) * S, (k.z + hh) * S);
       x.rotate(-k.yaw);
-      const hgt = k.top;
-      x.fillStyle = k.mat === 'mesh' ? 'rgba(200,200,190,.5)' : hgt > 4 ? '#1d2327' : hgt > 2 ? '#2d353a' : hgt > 1.3 ? '#3b454b' : '#56616a';
+      x.fillStyle = k.mat === 'mesh' ? 'rgba(200,200,190,.5)' : rise > 4 ? '#1d2327' : rise > 2 ? '#2d353a' : rise > 1.3 ? '#3b454b' : '#56616a';
       x.fillRect(-k.hx * S, -k.hz * S, k.hx * 2 * S, k.hz * 2 * S);
       x.strokeStyle = 'rgba(0,0,0,.5)'; x.lineWidth = 1;
       x.strokeRect(-k.hx * S, -k.hz * S, k.hx * 2 * S, k.hz * 2 * S);

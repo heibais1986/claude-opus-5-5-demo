@@ -191,8 +191,9 @@ export class Effects {
     this.shake = Math.max(this.shake, 1);
   }
   // 烟囱排烟 & 海鸥
-  initAmbient(funnelTop) {
+  initAmbient(funnelTop, withBirds = true) {
     this.funnelTop = funnelTop;
+    if (!withBirds) return;
     const birdMat = new THREE.MeshStandardMaterial({ color: 0xf2f2ee, roughness: 0.8, side: THREE.DoubleSide });
     const tipMat = new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.8, side: THREE.DoubleSide });
     for (let i = 0; i < 6; i++) {
