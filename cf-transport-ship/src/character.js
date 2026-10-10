@@ -1,5 +1,6 @@
 // 第三人称士兵：刚性蒙皮 + 程序动画 + 骨骼命中盒
 import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { buildGunMerged } from './guns.js';
 import { fbm } from './textures.js';
 
@@ -69,14 +70,15 @@ function bindPositions() {
   return out;
 }
 
-// 构建带蒙皮属性的合并几何
+// 构建带蒙皮属性的合并几何：按 布料 / 装具尼龙 / 金属 三组分开，才能给不同材质做不同的粗糙度与金属度
+export const SURFS = [['cloth', 0.86, 0.02], ['gear', 0.62, 0.08], ['metal', 0.34, 0.78]];
 const GEO_CACHE = {};
 function buildGeometry(team) {
   if (GEO_CACHE[team]) return GEO_CACHE[team];
   const O = OUTFIT[team];
   const bp = bindPositions();
-  const parts = [];
-  const add = (geo, bone, colorKey, x, y, z, rx = 0, ry = 0, rz = 0) => {
+  const groups = { cloth: [], gear: [], metal: [] };
+  const add = (geo, bone, colorKey, x, y, z, rx = 0, ry = 0, rz = 0, surf = 'cloth') => {
     const g = geo.clone();
     const m = new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz)), new THREE.Vector3(1, 1, 1));
     g.applyMatrix4(m);
@@ -102,10 +104,12 @@ function buildGeometry(team) {
     out.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4));
     out.setAttribute('skinWeight', new THREE.BufferAttribute(sw, 4));
     if (g.index) out.setIndex(g.index);
-    parts.push(out.index ? out.toNonIndexed() : out);
+    groups[surf].push(out.index ? out.toNonIndexed() : out);
   };
   const cap = (r, l) => new THREE.CapsuleGeometry(r, l, 3, 10);
   const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  // 只有决定剪影的大件用倒角盒：一个小倒角盒 324 顶点，而 13 个角色同屏都要蒙皮变形
+  const rbox = (w, h, d, r = 0.03) => new RoundedBoxGeometry(w, h, d, 1, Math.min(r, w / 2 - 1e-3, h / 2 - 1e-3, d / 2 - 1e-3));
   const sph = (r) => new THREE.SphereGeometry(r, 14, 10);
   const P = (name) => bp[BI[name]];
   // 腿
@@ -114,21 +118,36 @@ function buildGeometry(team) {
     const th = P('thigh' + s), sh = P('shin' + s), ft = P('foot' + s);
     add(cap(0.085, 0.3), 'thigh' + s, 'pants', th.x, th.y - 0.2, th.z);
     add(cap(0.068, 0.32), 'shin' + s, 'pants', sh.x, sh.y - 0.2, sh.z);
-    add(box(0.12, 0.14, 0.1), 'shin' + s, 'pads', sh.x, sh.y - 0.02, sh.z - 0.06);
-    add(box(0.12, 0.13, 0.27), 'foot' + s, 'boots', ft.x, ft.y + 0.03, ft.z - 0.05);
-    add(box(0.11, 0.1, 0.14), 'shin' + s, 'boots', sh.x, sh.y - 0.38, sh.z);
-    add(box(0.07, 0.1, 0.1), 'thigh' + s, 'pouch', th.x + sx * 0.08, th.y - 0.18, th.z);
+    add(box(0.12, 0.14, 0.1), 'shin' + s, 'pads', sh.x, sh.y - 0.02, sh.z - 0.06, 0, 0, 0, 'gear');
+    add(rbox(0.12, 0.13, 0.27, 0.032), 'foot' + s, 'boots', ft.x, ft.y + 0.03, ft.z - 0.05, 0, 0, 0, 'gear');
+    add(box(0.11, 0.1, 0.14), 'shin' + s, 'boots', sh.x, sh.y - 0.38, sh.z, 0, 0, 0, 'gear');
+    add(box(0.09, 0.014, 0.24), 'foot' + s, 'boots', ft.x, ft.y - 0.035, ft.z - 0.05, 0, 0, 0, 'gear'); // 鞋底
+    add(box(0.014, 0.09, 0.1), 'foot' + s, 'boots', ft.x + sx * 0.055, ft.y + 0.06, ft.z - 0.02, 0, 0, 0, 'gear'); // 靴筒后跟
+    add(box(0.07, 0.1, 0.1), 'thigh' + s, 'pouch', th.x + sx * 0.08, th.y - 0.18, th.z, 0, 0, 0, 'gear');
+    add(box(0.074, 0.012, 0.104), 'thigh' + s, 'band', th.x + sx * 0.08, th.y - 0.125, th.z, 0, 0, 0, 'metal'); // 袋盖扣带
   }
   // 躯干
   const hp = P('hips'), sp = P('spine'), ch = P('chest');
-  add(box(0.36, 0.22, 0.24), 'hips', 'pants', hp.x, hp.y - 0.02, hp.z);
-  add(box(0.38, 0.06, 0.26), 'hips', 'band', hp.x, hp.y + 0.08, hp.z);
+  add(rbox(0.36, 0.22, 0.24, 0.04), 'hips', 'pants', hp.x, hp.y - 0.02, hp.z);
+  add(box(0.38, 0.06, 0.26), 'hips', 'band', hp.x, hp.y + 0.08, hp.z, 0, 0, 0, 'gear');
+  add(box(0.06, 0.05, 0.02), 'hips', 'mask', hp.x, hp.y + 0.08, hp.z - 0.135, 0, 0, 0, 'metal'); // 腰带扣
+  add(box(0.05, 0.07, 0.03), 'hips', 'pouch', hp.x - 0.14, hp.y - 0.01, hp.z - 0.02, 0, 0, 0.25, 'gear'); // 水壶
   add(box(0.33, 0.22, 0.22), 'spine', 'jacket', sp.x, sp.y + 0.1, sp.z);
-  add(box(0.4, 0.3, 0.25), 'chest', 'jacket', ch.x, ch.y + 0.1, ch.z);
-  add(box(0.42, 0.34, 0.29), 'chest', 'vest', ch.x, ch.y + 0.06, ch.z);
-  for (let i = 0; i < 3; i++) add(box(0.085, 0.11, 0.05), 'chest', 'pouch', ch.x - 0.1 + i * 0.1, ch.y - 0.02, ch.z - 0.16);
-  add(box(0.3, 0.34, 0.12), 'chest', 'pouch', ch.x, ch.y + 0.05, ch.z + 0.19); // 背包
-  add(box(0.03, 0.25, 0.03), 'chest', 'goggles', ch.x + 0.1, ch.y + 0.32, ch.z + 0.2); // 天线
+  add(rbox(0.4, 0.3, 0.25, 0.045), 'chest', 'jacket', ch.x, ch.y + 0.1, ch.z);
+  add(rbox(0.42, 0.34, 0.29, 0.04), 'chest', 'vest', ch.x, ch.y + 0.06, ch.z, 0, 0, 0, 'gear');
+  add(box(0.42, 0.05, 0.29), 'chest', 'pouch', ch.x, ch.y + 0.235, ch.z, 0, 0, 0, 'gear'); // 背心肩线
+  for (let i = 0; i < 3; i++) add(box(0.085, 0.11, 0.05), 'chest', 'pouch', ch.x - 0.1 + i * 0.1, ch.y - 0.02, ch.z - 0.16, 0, 0, 0, 'gear');
+  for (let i = 0; i < 3; i++) add(box(0.078, 0.03, 0.052), 'chest', 'mask', ch.x - 0.1 + i * 0.1, ch.y + 0.036, ch.z - 0.163, 0, 0, 0, 'metal'); // 弹匣口
+  add(box(0.07, 0.1, 0.045), 'chest', 'pouch', ch.x + 0.17, ch.y + 0.02, ch.z - 0.05, 0, -0.35, 0, 'gear'); // 侧挂步枪弹匣袋
+  add(box(0.066, 0.09, 0.042), 'chest', 'mask', ch.x + 0.17, ch.y + 0.06, ch.z - 0.05, 0, -0.35, 0, 'metal');
+  add(box(0.3, 0.34, 0.12), 'chest', 'pouch', ch.x, ch.y + 0.05, ch.z + 0.19, 0, 0, 0, 'gear'); // 背包
+  add(box(0.26, 0.07, 0.13), 'chest', 'band', ch.x, ch.y + 0.235, ch.z + 0.19, 0, 0, 0, 'gear'); // 顶卷
+  add(box(0.09, 0.11, 0.05), 'chest', 'mask', ch.x - 0.12, ch.y + 0.12, ch.z + 0.27, 0, 0, 0, 'gear'); // 电台
+  add(box(0.03, 0.25, 0.03), 'chest', 'goggles', ch.x + 0.1, ch.y + 0.32, ch.z + 0.2, 0, 0, 0, 'metal'); // 天线
+  add(box(0.02, 0.19, 0.03), 'chest', 'goggles', ch.x - 0.13, ch.y + 0.28, ch.z + 0.26, 0.25, 0, 0, 'metal'); // 天线二
+  // 枪背带：斜跨胸前到左肩
+  add(box(0.055, 0.44, 0.02), 'chest', 'band', ch.x - 0.03, ch.y + 0.08, ch.z - 0.155, 0, 0, 0.62, 'gear');
+  add(box(0.055, 0.3, 0.02), 'chest', 'band', ch.x + 0.08, ch.y + 0.16, ch.z + 0.16, 0, 0, -0.5, 'gear');
   // 头
   const nk = P('neck'), hd = P('head');
   add(cap(0.055, 0.06), 'neck', 'skin', nk.x, nk.y + 0.04, nk.z);
@@ -136,32 +155,52 @@ function buildGeometry(team) {
   add(headG, 'head', 'skin', hd.x, hd.y + 0.09, hd.z);
   if (team === 'GR') {
     const helm = new THREE.SphereGeometry(0.128, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.55); helm.scale(1, 0.95, 1.08);
-    add(helm, 'head', 'head', hd.x, hd.y + 0.12, hd.z + 0.005);
-    add(box(0.23, 0.05, 0.05), 'head', 'goggles', hd.x, hd.y + 0.155, hd.z - 0.1);
-    add(box(0.18, 0.035, 0.02), 'head', 'lens', hd.x, hd.y + 0.155, hd.z - 0.125);
+    add(helm, 'head', 'head', hd.x, hd.y + 0.12, hd.z + 0.005, 0, 0, 0, 'gear');
+    add(box(0.26, 0.028, 0.27), 'head', 'head', hd.x, hd.y + 0.128, hd.z + 0.005, 0, 0, 0, 'gear'); // 盔檐
+    add(box(0.05, 0.035, 0.04), 'head', 'goggles', hd.x, hd.y + 0.15, hd.z - 0.135, 0, 0, 0, 'metal'); // 夜视仪底座
+    add(box(0.032, 0.026, 0.05), 'head', 'lens', hd.x, hd.y + 0.186, hd.z - 0.14, 0.3, 0, 0, 'metal');
+    add(box(0.23, 0.05, 0.05), 'head', 'goggles', hd.x, hd.y + 0.155, hd.z - 0.1, 0, 0, 0, 'gear');
+    add(box(0.18, 0.035, 0.02), 'head', 'lens', hd.x, hd.y + 0.155, hd.z - 0.125, 0, 0, 0, 'metal');
     const mask = sph(0.1); mask.scale(1, 0.62, 1.05);
-    add(mask, 'head', 'mask', hd.x, hd.y + 0.035, hd.z - 0.02);
+    add(mask, 'head', 'mask', hd.x, hd.y + 0.035, hd.z - 0.02, 0, 0, 0, 'gear');
+    add(box(0.02, 0.09, 0.1), 'head', 'band', hd.x + 0.118, hd.y + 0.06, hd.z + 0.02, 0, 0, 0.2, 'gear'); // 下颌带
+    add(box(0.02, 0.09, 0.1), 'head', 'band', hd.x - 0.118, hd.y + 0.06, hd.z + 0.02, 0, 0, -0.2, 'gear');
   } else {
     const hood = sph(0.114); hood.scale(0.98, 1.1, 1.05);
-    add(hood, 'head', 'mask', hd.x, hd.y + 0.1, hd.z + 0.008);
+    add(hood, 'head', 'mask', hd.x, hd.y + 0.1, hd.z + 0.008, 0, 0, 0, 'cloth');
     add(box(0.16, 0.035, 0.03), 'head', 'skin', hd.x, hd.y + 0.12, hd.z - 0.105);
-    add(box(0.24, 0.035, 0.235), 'head', 'band', hd.x, hd.y + 0.185, hd.z);
-    add(box(0.07, 0.022, 0.02), 'head', 'goggles', hd.x - 0.04, hd.y + 0.12, hd.z - 0.118);
-    add(box(0.07, 0.022, 0.02), 'head', 'goggles', hd.x + 0.04, hd.y + 0.12, hd.z - 0.118);
+    add(box(0.24, 0.035, 0.235), 'head', 'band', hd.x, hd.y + 0.185, hd.z, 0, 0, 0, 'gear'); // 头巾
+    add(box(0.24, 0.012, 0.24), 'head', 'armband', hd.x, hd.y + 0.205, hd.z, 0, 0, 0, 'cloth');
+    add(box(0.07, 0.022, 0.02), 'head', 'goggles', hd.x - 0.04, hd.y + 0.12, hd.z - 0.118, 0, 0, 0, 'metal');
+    add(box(0.07, 0.022, 0.02), 'head', 'goggles', hd.x + 0.04, hd.y + 0.12, hd.z - 0.118, 0, 0, 0, 'metal');
+    add(box(0.1, 0.06, 0.11), 'head', 'mask', hd.x, hd.y + 0.02, hd.z - 0.055, 0, 0, 0, 'cloth'); // 面罩下沿
   }
   // 手臂
   for (const s of ['R', 'L']) {
+    const px = s === 'R' ? -1 : 1; // 右手手指朝身体中线（握把内侧）穿出，左手镜像
     const ua = P('upperArm' + s), fa = P('forearm' + s), hn = P('hand' + s);
     add(sph(0.085), 'upperArm' + s, 'jacket', ua.x, ua.y - 0.02, ua.z);
     add(cap(0.062, 0.2), 'upperArm' + s, 'jacket', ua.x, ua.y - 0.15, ua.z);
     add(cap(0.066, 0.05), 'upperArm' + s, 'armband', ua.x, ua.y - 0.12, ua.z);
     add(cap(0.052, 0.19), 'forearm' + s, 'jacket', fa.x, fa.y - 0.13, fa.z);
-    add(box(0.075, 0.1, 0.05), 'hand' + s, 'gloves', hn.x, hn.y - 0.04, hn.z);
+    add(box(0.02, 0.06, 0.07), 'forearm' + s, 'pads', fa.x + px * 0.045, fa.y - 0.1, fa.z, 0, 0, 0, 'gear'); // 护肘
+    // 手套：掌 + 四指 + 拇指。指节沿骨骼 Y 排开，握把轴与之一致时才像握住而非拍在枪上
+    add(rbox(0.078, 0.072, 0.056, 0.018), 'hand' + s, 'gloves', hn.x, hn.y - 0.036, hn.z, 0, 0, 0, 'gear');
+    for (let i = 0; i < 4; i++) {
+      add(box(0.042, 0.015, 0.017), 'hand' + s, 'gloves', hn.x + px * 0.036, hn.y - 0.014 - i * 0.017, hn.z + 0.002, 0, 0, px * -0.22, 'gear');
+      add(box(0.016, 0.014, 0.017), 'hand' + s, 'gloves', hn.x + px * 0.056, hn.y - 0.026 - i * 0.017, hn.z + 0.002, 0, 0, px * 0.5, 'gear');
+    }
+    add(box(0.03, 0.015, 0.016), 'hand' + s, 'gloves', hn.x + px * 0.02, hn.y - 0.01, hn.z - 0.03, -0.5, 0, px * 0.3, 'gear');
   }
-  const geo = mergeAll(parts);
-  geo.computeBoundingSphere();
-  GEO_CACHE[team] = geo;
-  return geo;
+  const out = {};
+  for (const [surf] of SURFS) {
+    if (!groups[surf].length) continue;
+    const geo = mergeAll(groups[surf]);
+    geo.computeBoundingSphere();
+    out[surf] = geo;
+  }
+  GEO_CACHE[team] = out;
+  return out;
 }
 
 function mergeAll(list) {
@@ -179,7 +218,8 @@ function mergeAll(list) {
   return out;
 }
 
-const HITBOXES = [
+// 外部模型通道（models-ext.js）会复用这套判定体积，所以导出
+export const HITBOXES = [
   // bone, cx, cy, cz, hx, hy, hz, part
   ['head', 0, 0.1, 0, 0.1, 0.12, 0.11, 'head'],
   ['chest', 0, 0.1, 0, 0.21, 0.18, 0.145, 'chest'],
@@ -191,31 +231,88 @@ const HITBOXES = [
   ['shinR', 0, -0.22, 0, 0.07, 0.24, 0.075, 'leg'], ['shinL', 0, -0.22, 0, 0.07, 0.24, 0.075, 'leg'],
 ];
 
-const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _m = new THREE.Matrix4();
+const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _t1 = new THREE.Vector3(), _t2 = new THREE.Vector3(), _t3 = new THREE.Vector3();
+const _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _q3 = new THREE.Quaternion(), _q4 = new THREE.Quaternion(), _e = new THREE.Euler(), _m = new THREE.Matrix4();
 const DOWN = new THREE.Vector3(0, -1, 0);
+
+// 第三人称握持姿态（胸骨坐标系，-Z 是面朝方向）。每把枪的机匣长度、握把角、护木位置都不同，
+// 用一套偏移会让手枪像步枪、狙击枪永远浮在胸口外侧。
+export const GUN_POSES = {
+  ak47: { pos: [0.085, 0.075, -0.25], rot: [-0.02, 0.36, 0], handR: 0, handL: 1.57, rel: [0.01, -0.1, 0.08], relRot: [-0.45, 0.55, 0.35] },
+  m4a1: { pos: [0.085, 0.075, -0.26], rot: [-0.02, 0.36, 0], handR: 0, handL: 1.57, rel: [0.01, -0.1, 0.08], relRot: [-0.45, 0.55, 0.35] },
+  mp5: { pos: [0.08, 0.08, -0.24], rot: [-0.02, 0.34, 0], handR: 0, handL: 1.57, rel: [0.01, -0.1, 0.07], relRot: [-0.4, 0.5, 0.3] },
+  awm: {
+    // 1.2m 的枪身比手臂长，端着跑只能斜抱：再往前伸左手就够不到护木（实测差 10cm，手会浮在枪管外）
+    pos: [0.05, 0.07, -0.25], rot: [-0.02, 0.32, 0], handR: 0, handL: 1.57, rel: [-0.01, -0.11, 0.12], relRot: [-0.35, 0.7, 0.2],
+    // 开镜：枪收到脸前贴腮，上身转正，左手托护木
+    scoped: { pos: [0.02, 0.14, -0.23], rot: [0, 0.03, 0], handR: 0, handL: 1.57 },
+  },
+  deagle: { pos: [0.055, 0.115, -0.34], rot: [0, 0.16, 0], handR: 0, handL: 0, rel: [0, -0.12, 0.1], relRot: [-0.3, 0.9, 0.2] },
+  knife: { pos: [0.14, 0.05, -0.24], rot: [-0.3, 0.42, 0.12], handR: -0.2, handL: 0, rel: [0, -0.05, 0.05], relRot: [0, 0, 0] },
+  he: { pos: [0.13, 0.055, -0.22], rot: [-0.12, 0.3, 0.05], handR: 0, handL: 0, rel: [0, -0.06, 0.06], relRot: [-0.2, 0.3, 0] },
+};
+export const DEFAULT_POSE = { pos: [0.1, 0.075, -0.29], rot: [0, 0.36, 0], handR: 0, handL: 1.57, rel: [0, -0.1, 0.08], relRot: [-0.4, 0.5, 0.3] };
+
+// 脚下队伍环：几何与材质全图共用，只有可见性随角色变化
+let RING_GEO = null;
+const RING_MAT = {};
+function teamRing(team) {
+  if (!RING_GEO) RING_GEO = new THREE.RingGeometry(0.3, 0.355, 24);
+  if (!RING_MAT[team]) {
+    RING_MAT[team] = new THREE.MeshBasicMaterial({
+      color: OUTFIT[team].armband[0], transparent: true, opacity: 0.24, side: THREE.DoubleSide, depthWrite: false,
+    });
+  }
+  const r = new THREE.Mesh(RING_GEO, RING_MAT[team]);
+  r.rotation.x = -Math.PI / 2;
+  r.position.y = 0.03;
+  r.renderOrder = 2;
+  return r;
+}
 
 export class Soldier {
   constructor(team) {
     this.team = team;
     this.root = new THREE.Group();
-    const geo = buildGeometry(team);
-    this.material = new THREE.MeshStandardMaterial({ vertexColors: true, map: atlas(), roughness: 0.82, metalness: 0.05 });
-    this.mesh = new THREE.SkinnedMesh(geo, this.material);
-    this.mesh.castShadow = true; this.mesh.receiveShadow = true;
-    this.mesh.frustumCulled = false;
-    const bp = bindPositions();
-    this.bones = BONES.map(([name], i) => { const b = new THREE.Bone(); b.name = name; return b; });
+    // 骨架与三块蒙皮网格必须处在同一变换层下，共享 Skeleton 才不会各自算出不同的绑定矩阵
+    this.body = new THREE.Group();
+    this.root.add(this.body);
+    const geos = buildGeometry(team);
+    this.meshes = [];
+    this.mats = [];
+    this.mesh = null;
+    for (const [surf, rough, metal] of SURFS) {
+      if (!geos[surf]) continue;
+      const mat = new THREE.MeshStandardMaterial({ vertexColors: true, map: atlas(), roughness: rough, metalness: metal });
+      const mesh = new THREE.SkinnedMesh(geos[surf], mat);
+      mesh.castShadow = true; mesh.receiveShadow = true;
+      mesh.frustumCulled = false;
+      this.body.add(mesh);
+      if (!this.mesh) this.mesh = mesh; // 主网格：外部旧代码仍按 mesh 访问
+      this.meshes.push(mesh);
+      this.mats.push(mat);
+    }
+    this.material = this.mesh.material;
+    this.bones = BONES.map(([name]) => { const b = new THREE.Bone(); b.name = name; return b; });
     BONES.forEach(([, p, x, y, z], i) => {
       this.bones[i].position.set(x, y, z);
       if (p >= 0) this.bones[p].add(this.bones[i]); else this.mesh.add(this.bones[i]);
     });
-    void bp;
     this.mesh.updateMatrixWorld(true);
-    this.mesh.bind(new THREE.Skeleton(this.bones));
-    this.root.add(this.mesh);
+    const sk = new THREE.Skeleton(this.bones);
+    this.mesh.bind(sk);
+    for (const m of this.meshes) {
+      if (m === this.mesh) continue;
+      m.updateMatrixWorld(true);
+      m.bind(sk);
+    }
+    this.ring = teamRing(team);
+    this.root.add(this.ring);
     this.B = Object.fromEntries(this.bones.map((b) => [b.name, b]));
     this.phase = Math.random() * 10;
     this.crouchK = 0;
+    this.reloadK = 0;
+    this.aimK = 0;
     this.deadT = -1; this.fallDir = 1; this.fallSide = 0;
     this.recoilK = 0;
     this.gun = null; this.gunId = null;
@@ -224,9 +321,15 @@ export class Soldier {
     this.opacity = 1;
     this.flashT = 0;
   }
+  setVisible(on) {
+    for (const m of this.meshes) m.visible = on;
+    this.ring.visible = on && this.deadT < 0;
+    if (this.gun) this.gun.visible = on;
+  }
   setWeapon(id) {
     if (this.gunId === id) return;
     if (this.gun) this.B.chest.remove(this.gun);
+    this.aimK = 0; this.reloadK = 0; // 换枪瞬间不能带着上一把的开镜/换弹姿态
     this.gunId = id;
     this.gun = buildGunMerged(id);
     // 枪挂在胸骨上，保证瞄准方向稳定
@@ -264,6 +367,7 @@ export class Soldier {
     const B = this.B;
     if (this.deadT >= 0) { this.updateDeath(dt); return; }
     this.crouchK += ((st.crouch ? 1 : 0) - this.crouchK) * Math.min(1, dt * 10);
+    this.reloadK += ((st.reloading && this.aimK < 0.5 ? 1 : 0) - this.reloadK) * Math.min(1, dt * 8);
     const ck = this.crouchK;
     const sp = st.speed;
     const moving = sp > 0.3 && st.onGround;
@@ -293,36 +397,58 @@ export class Soldier {
     B.hips.position.y = 0.98 - ck * 0.38 - bob + (st.onGround ? 0 : 0.02);
     B.hips.position.z = ck * 0.08;
     B.hips.rotation.y = Math.sin(ph) * 0.08 * A;
-    // 上身跟随俯仰
+    // 上身跟随俯仰；开镜时侧身转正、头贴枪托
     const pitch = THREE.MathUtils.clamp(st.pitch, -1.2, 1.2);
-    B.spine.rotation.set(pitch * 0.3 + ck * 0.15, -B.hips.rotation.y - 0.25, 0);
-    B.chest.rotation.set(pitch * 0.45 - this.recoilK * 0.08, -0.12, 0);
-    B.neck.rotation.set(pitch * 0.2, 0.3, 0);
-    B.head.rotation.set(0, 0.05, 0);
+    const pose = GUN_POSES[this.gunId] || DEFAULT_POSE;
+    const scp = pose.scoped && pose.scoped.pos, scr = pose.scoped && pose.scoped.rot;
+    // st.scoped 由调用方判定（开镜动画已就绪才为真），这里只认这一位
+    const wantAim = !!(st.scoped && pose.scoped);
+    this.aimK += ((wantAim ? 1 : 0) - this.aimK) * Math.min(1, dt * 9);
+    const SK = this.aimK, RL = this.reloadK;
+    B.spine.rotation.set(pitch * 0.3 + ck * 0.15, (-B.hips.rotation.y - 0.25) * (1 - SK) - B.hips.rotation.y * SK, 0);
+    B.chest.rotation.set(pitch * (0.45 - SK * 0.2) - this.recoilK * 0.08, -0.12 * (1 - SK), 0);
+    B.neck.rotation.set(pitch * (0.2 + SK * 0.18), 0.3 * (1 - SK), 0);
+    B.head.rotation.set(-SK * 0.14, 0.05 * (1 - SK), SK * 0.06);
     this.recoilK *= Math.exp(-dt * 12);
-    // 枪相对胸骨
     if (this.gun) {
-      const sniper = this.gunType === 'awm', pistol = this.gunType === 'deagle', knife = this.gunType === 'knife' || this.gunType === 'he';
-      const gx = pistol ? 0.03 : 0.1, gy = pistol ? 0.14 : 0.1, gz = pistol ? -0.42 : -0.3;
-      this.gun.position.set(gx, gy + (st.reloading ? -0.08 : 0), gz + this.recoilK * 0.05);
-      this.gun.rotation.set(st.reloading ? -0.5 : 0, 0.37, st.reloading ? 0.4 : 0);
-      if (knife) { this.gun.position.set(0.18, 0.02, -0.28); this.gun.rotation.set(-0.3, 0.37, 0); }
-      void sniper;
+      const pp = pose.pos, rr = pose.rot, rel = pose.rel, relRot = pose.relRot;
+      const lerp1 = (a, b) => (b === undefined ? a : a + (b - a) * SK);
+      this.gun.position.set(
+        lerp1(pp[0], scp && scp[0]) + rel[0] * RL,
+        lerp1(pp[1], scp && scp[1]) + rel[1] * RL,
+        lerp1(pp[2], scp && scp[2]) + rel[2] * RL + this.recoilK * 0.05
+      );
+      this.gun.rotation.set(
+        lerp1(rr[0], scr && scr[0]) + relRot[0] * RL - this.recoilK * 0.12,
+        lerp1(rr[1], scr && scr[1]) + relRot[1] * RL,
+        lerp1(rr[2], scr && scr[2]) + relRot[2] * RL
+      );
       this.mesh.updateMatrixWorld(true);
       const an = this.gun.userData.anchors;
-      const grip = this.gun.localToWorld(_v.copy(an.grip || new THREE.Vector3()));
-      const gW = grip.clone();
-      const poleR = this.B.chest.localToWorld(new THREE.Vector3(0.6, -0.5, 0.1));
+      const gW = this.gun.localToWorld(_t1.copy(an.grip || _t2.set(0, -0.05, 0)));
+      const poleR = this.B.chest.localToWorld(_t3.set(0.6, -0.5, 0.1));
       this.solveArm('R', gW, poleR);
-      if (an.fore && !knife) {
-        const fw = this.gun.localToWorld(_v.copy(an.fore));
-        const poleL = this.B.chest.localToWorld(new THREE.Vector3(-0.5, -0.6, 0.0));
+      const gunQ = this.gun.getWorldQuaternion(_q4);
+      this.setHand('R', gunQ, pose.handR);
+      if (an.fore) {
+        const fw = this.gun.localToWorld(_t1.copy(an.fore));
+        const poleL = this.B.chest.localToWorld(_t3.set(-0.5, -0.6, 0));
         this.solveArm('L', fw, poleL);
+        this.setHand('L', gunQ, pose.handL);
       } else {
         B.upperArmL.rotation.set(0.3, 0, -0.15); B.forearmL.rotation.set(0.6, 0, 0);
+        B.handL.quaternion.identity();
       }
+    } else {
+      B.handR.quaternion.identity(); B.handL.quaternion.identity();
     }
-    B.handR.rotation.set(0, 0, 0); B.handL.rotation.set(0, 0, 0);
+  }
+  // 手掌朝向跟着枪转：手指是绕着握把排开的，指节不对枪就只会拍成一块盒子
+  setHand(side, gunWorldQ, rollX) {
+    const h = this.B['hand' + side];
+    _q2.setFromEuler(_e.set(rollX, 0, 0));
+    _q.copy(gunWorldQ).multiply(_q2);
+    h.quaternion.copy(h.parent.getWorldQuaternion(_q3).invert().multiply(_q));
   }
   kick() { this.recoilK = 1; }
   die(dirX, dirZ, headshot) {
@@ -334,7 +460,7 @@ export class Soldier {
     this.fallSide = (Math.random() - 0.5) * 0.8;
     this.fallSpeed = headshot ? 1.4 : 1;
     this.limbR = [Math.random(), Math.random(), Math.random(), Math.random()];
-    this.opacity = 1; this.material.transparent = false; this.material.opacity = 1;
+    this.setFade(1, false);
   }
   updateDeath(dt) {
     const B = this.B;
@@ -342,8 +468,7 @@ export class Soldier {
     const t = Math.min(1, this.deadT * 1.6 * this.fallSpeed);
     const e = t * t; // 重力加速
     const ang = e * Math.PI * 0.5 * 0.96;
-    this.mesh.rotation.x = -this.fallDir * ang;
-    this.mesh.rotation.z = this.fallSide * e;
+    for (const m of this.meshes) { m.rotation.x = -this.fallDir * ang; m.rotation.z = this.fallSide * e; }
     B.hips.position.y = 0.98 - Math.sin(t * Math.PI) * 0.25 - t * 0.3;
     const r = this.limbR;
     const k = Math.min(1, this.deadT * 3);
@@ -354,16 +479,22 @@ export class Soldier {
     B.shinR.rotation.x *= 0.9; B.shinL.rotation.x *= 0.9;
     B.spine.rotation.x *= 0.9; B.chest.rotation.x *= 0.9; B.neck.rotation.x += (0.3 * this.fallDir - B.neck.rotation.x) * 0.1;
     if (this.gun) this.gun.visible = this.deadT < 0.25;
+    this.ring.visible = false;
     if (this.deadT > 4.5) {
-      this.material.transparent = true;
-      this.opacity = Math.max(0, 1 - (this.deadT - 4.5) / 1.2);
-      this.material.opacity = this.opacity;
+      this.setFade(Math.max(0, 1 - (this.deadT - 4.5) / 1.2), true);
       this.root.position.y -= dt * 0.15;
     }
   }
+  setFade(op, transparent) {
+    this.opacity = op;
+    for (const m of this.mats) { m.transparent = transparent; m.opacity = op; }
+  }
   reset() {
-    this.deadT = -1; this.mesh.rotation.set(0, 0, 0);
-    this.material.transparent = false; this.material.opacity = 1; this.opacity = 1;
+    this.deadT = -1;
+    for (const m of this.meshes) m.rotation.set(0, 0, 0);
+    this.setFade(1, false);
+    this.aimK = 0; this.reloadK = 0;
+    this.ring.visible = true;
     if (this.gun) this.gun.visible = true;
   }
   // 射线命中测试，返回 {t, part}

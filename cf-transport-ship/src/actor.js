@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { WEAPONS, WeaponState, currentSpread, recoilKick } from './weapons.js';
 import { Soldier } from './character.js';
+import { makeSoldier } from './models-ext.js';
 
 export const STAND_H = 1.8, CROUCH_H = 1.15, EYE_STAND = 1.62, EYE_CROUCH = 1.05;
 const GRAV = 19, JUMP_V = 6.6, RUN = 5.7;
@@ -19,7 +20,7 @@ export class Actor {
     this.streak = 0; this.lastKillT = -99; this.multi = 0;
     this.radarT = 0; this.ping = 20 + ((Math.random() * 40) | 0);
     this.primary = 'ak47';
-    this.soldier = new Soldier(team);
+    this.soldier = makeSoldier(team, Soldier);
     game.renderer.scene.add(this.soldier.root);
     this.stepDist = 0; this.scoped = 0; this.scopeReady = false; this.scopeT = 0;
     this.lastHurt = -99; this.lastAttacker = null;

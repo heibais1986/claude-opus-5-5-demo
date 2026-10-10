@@ -196,7 +196,7 @@ for (game.time = 0; game.time < SECS; game.time += DT, tick++) {
     const s = a.soldier;
     s.root.position.copy(a.pos); s.root.rotation.y = a.yaw;
     const fwd = (a.vel.x * -Math.sin(a.yaw) + a.vel.z * -Math.cos(a.yaw)) / Math.max(0.01, a.speed || 0);
-    s.update(DT, { speed: a.speed || 0, fwd, crouch: a.crouch, pitch: a.pitch + a.punchP, onGround: a.onGround, reloading: a.weapon?.reloading });
+    s.update(DT, { speed: a.speed || 0, fwd, crouch: a.crouch, pitch: a.pitch + a.punchP, onGround: a.onGround, reloading: a.weapon?.reloading, scoped: a.scoped > 0 && a.scopeReady });
   }
   if (tick % Math.round(W / DT) === 0) {
     for (const s of stat) {
