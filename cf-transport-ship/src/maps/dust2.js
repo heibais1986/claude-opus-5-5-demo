@@ -1,7 +1,10 @@
 // de_dust2：直接渲染真实 CS2 地图几何
 // 数据来自 dust2-web/public/assets/map（collision.json 的三角面 + 每面一个穿透材质字节），
 // 由 tools/dust2-geo.mjs 量化、焊接、gzip 后内联在 ./dust2-geo.js。这里解压后按
-// 「材质 x 主朝向」分成十个合批网格；碰撞体和导航高度场出自同一次体素采样，
+// 「空间格(12m) x 材质 x 主朝向」分成数百个合批网格，每格包围盒收紧，
+// 视锥剔除能真正干活（原来整图一个包围盒，24.6 万面每帧全量提交）。
+// 地图不投射实时阴影（1.6 本来就没有，靠法线点乘着色），阴影贴图只剩人物，
+// 原来 24.6 万面的阴影 pass 直接消失。碰撞体和导航高度场出自同一次体素采样，
 // 所以视觉、物理、寻路看到的是同一份真实数据。
 import * as THREE from 'three';
 import { createBuilder } from '../mapkit.js';
@@ -75,7 +78,7 @@ async function buildDust2(scene, T, world) {
     pos[i * 3 + 1] = oy + G.verts[i * 3 + 1] * qy;
     pos[i * 3 + 2] = oz + G.verts[i * 3 + 2] * qz;
   }
-  const bkt = new Uint8Array(NT), cnt = new Int32Array(BUCKETS.length);
+  const bkt = new Uint8Array(NT);
   for (let t = 0; t < NT; t++) {
     const i0 = G.idx[t * 3], i1 = G.idx[t * 3 + 1], i2 = G.idx[t * 3 + 2];
     const a = i0 * 3, b = i1 * 3, c = i2 * 3;
@@ -93,44 +96,91 @@ async function buildDust2(scene, T, world) {
     }
     for (const v of [a, b, c]) { nrm[v] += nx; nrm[v + 1] += ny; nrm[v + 2] += nz; }
     const k = bucketOf(G.mat[t], nx, ny, nz);
-    bkt[t] = k; cnt[k]++;
+    bkt[t] = k;
   }
   for (let i = 0; i < nV; i++) {
     const l = Math.hypot(nrm[i * 3], nrm[i * 3 + 1], nrm[i * 3 + 2]) || 1;
     nrm[i * 3] /= l; nrm[i * 3 + 1] /= l; nrm[i * 3 + 2] /= l;
   }
-  // 位置与法线在十个几何体之间共享，只有 UV 和索引按桶分开
-  const posAttr = new THREE.BufferAttribute(pos, 3);
-  const nrmAttr = new THREE.BufferAttribute(nrm, 3);
+  // ---------- 空间分块 + 合批 ----------
+  // 原来每材质整图一个 Mesh，包围盒覆盖全图，视锥剔除永远剔不掉，
+  // 24.6 万面每帧全量提交（再加阴影就是 50 万）。
+  // 现按 12m 空间格切分，每格每材质一个 Mesh，包围盒收紧到格子实际几何，
+  // 视锥外的格子直接被剔除。阴影优化见下方 castShadow。
+  const CELL = 12;
+  const bx0 = LAYOUT.bounds.x[0], bx1 = LAYOUT.bounds.x[1];
+  const bz0 = LAYOUT.bounds.z[0], bz1 = LAYOUT.bounds.z[1];
+  const cnx = Math.max(1, Math.ceil((bx1 - bx0) / CELL));
+  const cnz = Math.max(1, Math.ceil((bz1 - bz0) / CELL));
+  const nCells = cnx * cnz, NB = BUCKETS.length;
+  const cellTris = new Array(nCells * NB);   // 每格每材质的三角面索引
+  const vmark = new Int32Array(nV);
+  const vremap = new Int32Array(nV);
+  const cellOf = (x, z) => {
+    let cx = ((x - bx0) / CELL) | 0, cz = ((z - bz0) / CELL) | 0;
+    if (cx < 0) cx = 0; else if (cx >= cnx) cx = cnx - 1;
+    if (cz < 0) cz = 0; else if (cz >= cnz) cz = cnz - 1;
+    return cz * cnx + cx;
+  };
+  // 第一遍：只按质心分三角面。顶点去重不能在这里做——一个顶点会被相邻
+  // 格的三角面共享，跨格交错标记会互相覆盖导致重复。
+  for (let t = 0; t < NT; t++) {
+    const k = bkt[t];
+    if (k === 255) continue;
+    const i0 = G.idx[t * 3], i1 = G.idx[t * 3 + 1], i2 = G.idx[t * 3 + 2];
+    const cx = (pos[i0 * 3] + pos[i1 * 3] + pos[i2 * 3]) / 3;
+    const cz = (pos[i0 * 3 + 2] + pos[i1 * 3 + 2] + pos[i2 * 3 + 2]) / 3;
+    const key = cellOf(cx, cz) * NB + k;
+    let ta = cellTris[key];
+    if (!ta) cellTris[key] = ta = [];
+    ta.push(t);
+  }
+  // 第二遍：逐块独立去重顶点（每块用独立 stamp，块内一次处理完，不会被别的块干扰）
   const meshes = [];
-  for (let k = 0; k < BUCKETS.length; k++) {
-    const n = cnt[k];
-    if (!n) continue;
-    const B = BUCKETS[k], tile = B.tile;
-    const uv = new Float32Array(nV * 2);
-    const index = new Uint32Array(n * 3);
-    let p = 0;
-    for (let t = 0; t < NT; t++) {
-      if (bkt[t] !== k) continue;
-      const i0 = G.idx[t * 3], i1 = G.idx[t * 3 + 1], i2 = G.idx[t * 3 + 2];
-      index[p++] = i0; index[p++] = i1; index[p++] = i2;
-      for (const i of [i0, i1, i2]) {
-        const x = pos[i * 3], y = pos[i * 3 + 1], z = pos[i * 3 + 2];
-        uv[i * 2] = (B.proj === 'Z' ? x : B.proj === 'X' ? z : x) / tile;
-        uv[i * 2 + 1] = (B.proj === 'H' ? z : y) / tile;
+  let stamp = 0;
+  for (let key = 0; key < cellTris.length; key++) {
+    const ta = cellTris[key];
+    if (!ta) continue;
+    stamp++;
+    const va = [];
+    for (const t of ta) {
+      for (let e = 0; e < 3; e++) {
+        const vi = G.idx[t * 3 + e];
+        if (vmark[vi] !== stamp) { vmark[vi] = stamp; va.push(vi); }
       }
     }
+    const nv = va.length;
+    const k = key % NB, B = BUCKETS[k], tile = B.tile;
+    for (let i = 0; i < nv; i++) vremap[va[i]] = i;
+    const cp = new Float32Array(nv * 3), cn = new Float32Array(nv * 3), cuv = new Float32Array(nv * 2);
+    for (let i = 0; i < nv; i++) {
+      const r = va[i] * 3, w = i * 3, u = i * 2;
+      const x = pos[r], y = pos[r + 1], z = pos[r + 2];
+      cp[w] = x; cp[w + 1] = y; cp[w + 2] = z;
+      cn[w] = nrm[r]; cn[w + 1] = nrm[r + 1]; cn[w + 2] = nrm[r + 2];
+      cuv[u] = (B.proj === 'Z' ? x : B.proj === 'X' ? z : x) / tile;
+      cuv[u + 1] = (B.proj === 'H' ? z : y) / tile;
+    }
+    const index = new Uint32Array(ta.length * 3);
+    let p = 0;
+    for (const t of ta) {
+      index[p++] = vremap[G.idx[t * 3]];
+      index[p++] = vremap[G.idx[t * 3 + 1]];
+      index[p++] = vremap[G.idx[t * 3 + 2]];
+    }
     const g = new THREE.BufferGeometry();
-    g.setAttribute('position', posAttr);
-    g.setAttribute('normal', nrmAttr);
-    g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    g.setAttribute('position', new THREE.BufferAttribute(cp, 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(cn, 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(cuv, 2));
     g.setIndex(new THREE.BufferAttribute(index, 1));
     g.computeBoundingSphere();
     const mesh = new THREE.Mesh(g, mats[k]);
-    mesh.castShadow = B.cast;
+    // 地图不投射实时阴影：1.6 本来就没有，靠法线点乘着色。
+    // 阴影贴图只剩人物/道具（几千面），原来 24.6 万面的阴影 pass 直接消失。
+    mesh.castShadow = false;
     mesh.receiveShadow = true;
     mesh.matrixAutoUpdate = false; mesh.updateMatrix();
-    mesh.name = B.key;
+    mesh.name = B.key + '_c' + ((key / NB) | 0);
     scene.add(mesh);
     meshes.push(mesh);
   }
