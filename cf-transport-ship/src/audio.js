@@ -1,6 +1,7 @@
 /**
  * 程序化合成音效模块（运输船 FPS）
- * 只使用 Web Audio API（+ 可选 speechSynthesis），无外部音频文件、无依赖。
+ * 主要靠 Web Audio API（+ 可选 speechSynthesis）合成；只有脚步与部分弹着撞击
+ * 用 CC0 真实采样（assets/cc0，见该目录 ATTRIBUTION.md），解码失败时自动回合成成。
  * 位置一律为普通对象 {x,y,z}（米，Y 轴向上）。
  *
  * 信号路由：
@@ -10,6 +11,28 @@
  *   voice(播报徽章音)                         │
  *   sfxSend/ambSend → convolver(程序生成 IR) ─┘
  */
+
+import stepCon0 from '../assets/cc0/kenney-impact-sounds/footstep_concrete_000.ogg';
+import stepCon1 from '../assets/cc0/kenney-impact-sounds/footstep_concrete_001.ogg';
+import stepCon2 from '../assets/cc0/kenney-impact-sounds/footstep_concrete_002.ogg';
+import stepCon3 from '../assets/cc0/kenney-impact-sounds/footstep_concrete_003.ogg';
+import stepCon4 from '../assets/cc0/kenney-impact-sounds/footstep_concrete_004.ogg';
+import stepWood0 from '../assets/cc0/kenney-impact-sounds/footstep_wood_000.ogg';
+import stepWood1 from '../assets/cc0/kenney-impact-sounds/footstep_wood_001.ogg';
+import stepWood2 from '../assets/cc0/kenney-impact-sounds/footstep_wood_002.ogg';
+import hitMetalL from '../assets/cc0/kenney-impact-sounds/impactMetal_light_000.ogg';
+import hitMetalM from '../assets/cc0/kenney-impact-sounds/impactMetal_medium_000.ogg';
+import hitWood from '../assets/cc0/kenney-impact-sounds/impactWood_medium_000.ogg';
+
+// 采样库：一组里随机取一条并微调色，避免同一只脚每步完全一样
+const SAMPLES = {
+  stepCon: [stepCon0, stepCon1, stepCon2, stepCon3, stepCon4],
+  stepWood: [stepWood0, stepWood1, stepWood2],
+  hitMetal: [hitMetalL, hitMetalM],
+  hitWood: [hitWood],
+};
+// 地面 surface 名 → 采样组。金属甲板/格栅/集装箱没有合适的 CC0 脚步录音，继续走合成。
+const STEP_SET = { concrete: 'stepCon', sand: 'stepCon', gravel: 'stepCon', dirt: 'stepCon', wood: 'stepWood', crate: 'stepWood' };
 
 const TAU = Math.PI * 2;
 const MAX_VOICES = 48; // 全局同时发声上限
@@ -206,6 +229,9 @@ export class AudioSystem {
     this._warned = new Set();
     this._sv = null; // 缓存的播报语音
     this._speechInit = false;
+    this._bufs = null; // 采样名 -> AudioBuffer（解码完成后填充）
+    this._bufQ = null; // 正在解码
+    this._smpIx = {}; // 每组上次用到的下标，避免连续重复
   }
 
   get ready() {
@@ -235,6 +261,7 @@ export class AudioSystem {
       this.ctx = ctx;
       this._offline = !!G.OfflineAudioContext && ctx instanceof G.OfflineAudioContext;
       this._build();
+      this._loadSamples();
       this._resume();
       if (!this._offline && typeof setInterval === 'function') {
         // 兜底调度：即使游戏暂停调用 update()，心跳/环境事件仍能继续
@@ -441,6 +468,50 @@ export class AudioSystem {
   // -------------------------------------------------------------------------
   // 移动
   // -------------------------------------------------------------------------
+  // 采样在 init 后后台解码；没解好或解码失败时照旧走合成路径，第一声不会哑
+  _loadSamples() {
+    if (this._bufs || this._bufQ || !this.ctx || !this.ctx.decodeAudioData || typeof atob !== 'function') return;
+    const jobs = [];
+    for (const [k, urls] of Object.entries(SAMPLES)) {
+      urls.forEach((u, i) => jobs.push(
+        new Promise((res) => {
+          const s = u.indexOf(',');
+          const bin = atob(s >= 0 ? u.slice(s + 1) : u);
+          const b = new Uint8Array(bin.length);
+          for (let j = 0; j < bin.length; j++) b[j] = bin.charCodeAt(j);
+          res(b.buffer);
+        }).then((ab) => this.ctx.decodeAudioData(ab)).then((buf) => [`${k}_${i}`, buf]).catch(() => null)
+      ));
+    }
+    this._bufQ = Promise.all(jobs).then((rs) => {
+      const m = {};
+      for (const r of rs) if (r) m[r[0]] = r[1];
+      this._bufs = m;
+      this._bufQ = null;
+    }).catch((e) => { this._bufQ = null; this._warn('loadSamples', e); });
+  }
+
+  // 通过 voice 的输入总线播放一条采样：距离低通、HRTF 声像、混响发送全部照旧
+  _smp(v, t, set, g, rate) {
+    const urls = SAMPLES[set];
+    if (!urls || !this._bufs) return false;
+    let i = (Math.random() * urls.length) | 0;
+    if (urls.length > 1 && i === this._smpIx[set]) i = (i + 1) % urls.length;
+    this._smpIx[set] = i;
+    const b = this._bufs[`${set}_${i}`];
+    if (!b) return false;
+    const c = this.ctx, s = c.createBufferSource(), gn = c.createGain();
+    s.buffer = b;
+    s.playbackRate.value = clamp(num(rate, 1), 0.7, 1.4);
+    gn.gain.value = g;
+    v.nodes.push(gn);
+    s.connect(gn);
+    gn.connect(v.input);
+    this._track(v, s, t + b.duration / s.playbackRate.value);
+    s.start(t);
+    return true;
+  }
+
   playFootstep(pos, surface, opts) {
     if (!this._ok()) return;
     try {
@@ -450,9 +521,16 @@ export class AudioSystem {
       const lvl = (crouch ? 0.32 : run ? 1 : 0.6) * jit(0.12);
       const v = this._voice(p, { g: (local ? 0.45 : 1.8) * lvl, ref: 2.5, roll: 1.25, max: 60, wet: local ? 0.04 : 0.1 });
       const t = this._now(), r = jit(0.06), br = crouch ? 0.45 : 1;
-      this._surf(v, t, surface, 1, r, 0, br); // 脚跟
-      const gap = crouch ? 0.09 : run ? 0.045 : 0.07;
-      this._surf(v, t + gap * jit(0.15), surface, 0.45, r * 1.06, 0, br * 0.8); // 前脚掌
+      const set = STEP_SET[surface];
+      // 真实录音本身就有鞋底与地面的细碎质感，合成只补一层擦地声
+      const smped = set && this._smp(v, t, set, crouch ? 0.55 : run ? 0.95 : 0.75, r * (crouch ? 0.93 : 1));
+      if (!smped) {
+        this._surf(v, t, surface, 1, r, 0, br); // 脚跟
+        const gap = crouch ? 0.09 : run ? 0.045 : 0.07;
+        this._surf(v, t + gap * jit(0.15), surface, 0.45, r * 1.06, 0, br * 0.8); // 前脚掌
+      } else if (!crouch) {
+        this._nz(v, t + 0.02, { n: 'white', a: 0.0008, dur: 0.05, g: 0.16 * br, flt: [{ t: 'bandpass', f: 1500 * r, q: 0.9 }] });
+      }
       if (run) this._nz(v, t, { n: 'white', a: 0.02, dur: 0.08, g: 0.06, flt: [{ t: 'bandpass', f: 2200 * r, q: 0.8 }] }); // 衣物/装备
       this._done(v);
     } catch (e) {
@@ -468,8 +546,11 @@ export class AudioSystem {
       const v = this._voice(p, { g: (local ? 0.5 : 1.6) * (0.45 + 0.65 * s), ref: 3, roll: 1.2, max: 70, wet: 0.08 });
       const t = this._now(), r = jit(0.06);
       this._tn(v, t, { f: 95 * r, f1: 45, sw: 0.1, a: 0.002, dur: 0.1 + 0.12 * s, g: 0.55 + 0.3 * s }); // 身体下坠闷响
-      this._surf(v, t, surface, 0.9, r, s, 1);
-      this._surf(v, t + 0.03 * jit(0.2), surface, 0.5, r * 1.05, s * 0.5, 0.8);
+      const set = STEP_SET[surface];
+      if (!(set && this._smp(v, t, set, 0.8 + 0.3 * s, r * 0.97))) {
+        this._surf(v, t, surface, 0.9, r, s, 1);
+        this._surf(v, t + 0.03 * jit(0.2), surface, 0.5, r * 1.05, s * 0.5, 0.8);
+      }
       this._nz(v, t + 0.01, { n: 'white', a: 0.01, dur: 0.1, g: 0.08 + 0.08 * s, flt: [{ t: 'bandpass', f: 2200, q: 0.8 }] });
       if (s > 0.4) this._metal(v, t + rand(0.03, 0.09), rand(2200, 3400), 0.04 * s, [[1, 1, 0.06], [1.9, 0.5, 0.04]]);
       this._done(v);
@@ -505,15 +586,20 @@ export class AudioSystem {
       const t = this._now(), r = jit(0.06);
       switch (material) {
         case 'metal':
-          this._nz(v, t, { n: 'white', a: 0.0002, dur: 0.003, g: 0.6, flt: [{ t: 'highpass', f: 3000 * r, q: 0 }] });
-          this._nz(v, t, { n: 'pink', a: 0.0005, dur: 0.025, g: 0.35, flt: [{ t: 'bandpass', f: 900 * r, q: 1 }] });
-          this._metal(v, t, rand(1700, 3000), 0.16, [[1, 1, 0.14], [1.47, 0.8, 0.1], [2.09, 0.6, 0.08], [2.93, 0.4, 0.05], [4.1, 0.25, 0.035]]);
+          // 真实金属撞击录音的颤响结构比合成泛音列可信，火花那层高频嘶声仍由合成补
+          if (!this._smp(v, t, 'hitMetal', 0.5, r)) {
+            this._nz(v, t, { n: 'white', a: 0.0002, dur: 0.003, g: 0.6, flt: [{ t: 'highpass', f: 3000 * r, q: 0 }] });
+            this._nz(v, t, { n: 'pink', a: 0.0005, dur: 0.025, g: 0.35, flt: [{ t: 'bandpass', f: 900 * r, q: 1 }] });
+            this._metal(v, t, rand(1700, 3000), 0.16, [[1, 1, 0.14], [1.47, 0.8, 0.1], [2.09, 0.6, 0.08], [2.93, 0.4, 0.05], [4.1, 0.25, 0.035]]);
+          }
           this._nz(v, t + 0.004, { n: 'white', a: 0.002, dur: 0.07, g: 0.1, flt: [{ t: 'highpass', f: 6000, q: 0 }] }); // 火花
           break;
         case 'wood':
-          this._nz(v, t, { n: 'white', a: 0.0003, dur: 0.004, g: 0.35, flt: [{ t: 'highpass', f: 2000 * r, q: 0 }] });
-          this._nz(v, t, { n: 'pink', a: 0.0008, dur: 0.06, g: 0.7, flt: [{ t: 'bandpass', f: 700 * r, q: 1.2 }] });
-          this._tn(v, t, { f: 190 * r, f1: 110, a: 0.001, dur: 0.05, g: 0.35 });
+          if (!this._smp(v, t, 'hitWood', 0.5, r)) {
+            this._nz(v, t, { n: 'white', a: 0.0003, dur: 0.004, g: 0.35, flt: [{ t: 'highpass', f: 2000 * r, q: 0 }] });
+            this._nz(v, t, { n: 'pink', a: 0.0008, dur: 0.06, g: 0.7, flt: [{ t: 'bandpass', f: 700 * r, q: 1.2 }] });
+            this._tn(v, t, { f: 190 * r, f1: 110, a: 0.001, dur: 0.05, g: 0.35 });
+          }
           for (let i = 0; i < 3; i++) this._click(v, t + rand(0.005, 0.04), rand(2500, 4500), 0.12, 3, 0.008); // 木屑
           break;
         case 'flesh':

@@ -5,9 +5,19 @@
 // 所以视觉、物理、寻路看到的是同一份真实数据。
 import * as THREE from 'three';
 import { createBuilder } from '../mapkit.js';
-import { decodeGeo, navField, makeSampler, addColliders, buildSpawns } from './geo.js';
-import { GEO_META, MESH_SPAWNS, MESH_LABELS } from './dust2-geo.js';
-import { LAYOUT } from './dust2-layout.js';
+import { decodeGeo, navField, makeSampler, addColliders, buildSpawns, carveDoorways } from './geo.js';
+import { GEO_META, NAV_META, MESH_SPAWNS, MESH_LABELS } from './dust2-geo.js';
+import { LAYOUT, DOORS } from './dust2-layout.js';
+
+// 门洞内的面是否该删：竖直面、中心在门洞矩形内、低于门楣。
+// 只删门板，地面（水平面）和门楣保留。
+function inDoorway(x, y, z, vertical) {
+  if (!vertical) return false;
+  for (const D of DOORS) {
+    if (x > D.x0 && x < D.x1 && z > D.z0 && z < D.z1 && y < D.top) return true;
+  }
+  return false;
+}
 
 // 桶序：混凝土（平/仰/东西墙/南北墙）、木（平/东西/南北）、金属（平/东西/南北）
 // 同一桶内的面朝向一致，才能用同一套平面投影 UV（UV 直接取世界坐标 / tile）
@@ -74,6 +84,13 @@ async function buildDust2(scene, T, world) {
     let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
     const len = Math.hypot(nx, ny, nz) || 1;
     nx /= len; ny /= len; nz /= len;
+    // 门洞修复：删掉封死门洞的门板三角面（bkt=255，后续合批跳过）
+    {
+      const cx = (pos[a] + pos[b] + pos[c]) / 3;
+      const cy = (pos[a + 1] + pos[b + 1] + pos[c + 1]) / 3;
+      const cz = (pos[a + 2] + pos[b + 2] + pos[c + 2]) / 3;
+      if (inDoorway(cx, cy, cz, Math.abs(ny) <= 0.5)) { bkt[t] = 255; continue; }
+    }
     for (const v of [a, b, c]) { nrm[v] += nx; nrm[v + 1] += ny; nrm[v + 2] += nz; }
     const k = bucketOf(G.mat[t], nx, ny, nz);
     bkt[t] = k; cnt[k]++;
@@ -121,6 +138,9 @@ async function buildDust2(scene, T, world) {
   // ---------- 碰撞体 + 世界夹：与离线校验共用同一套装配 ----------
   addColliders(world, G, LAYOUT.bounds, S);
 
+  // ---------- 门洞修复：把烘焙数据里封死的门洞挖成开放门洞 ----------
+  carveDoorways(world, S, DOORS);
+
   // ---------- 灯柱：报点上空，地面能站人时才立 ----------
   for (const l of MESH_LABELS) {
     const p = S.freeNear(l.x, l.z);
@@ -135,13 +155,41 @@ async function buildDust2(scene, T, world) {
 
   // 出生点取自 Valve 官方点位，高度用导航场实测地面
   const yaw = LAYOUT.spawnYaw;
+  // 门洞修复（导航）：烘焙的导航场在门洞处是断的，运行时按门洞地面高补上，
+  // 并与相邻可走格双向打通。高度差复核交给 NavGrid（上行 1m / 下落 3m）。
+  const field = navField(G);
+  {
+    const NM = NAV_META, y = field.y, link = field.link;
+    const DIRS = [[1, 0], [0, 1], [-1, 0], [0, -1]];
+    for (const D of DOORS) {
+      const cells = [];
+      for (let j = 0; j < NM.h; j++) for (let i = 0; i < NM.w; i++) {
+        const cx = NM.x0 + (i + 0.5) * NM.cell, cz = NM.z0 + (j + 0.5) * NM.cell;
+        if (cx < D.x0 || cx > D.x1 || cz < D.z0 || cz > D.z1) continue;
+        const k = j * NM.w + i;
+        y[k] = Math.round(D.ground * 100);
+        cells.push(k);
+      }
+      for (const k of cells) {
+        const i = k % NM.w, j = (k / NM.w) | 0;
+        for (let d = 0; d < 4; d++) {
+          const ni = i + DIRS[d][0], nj = j + DIRS[d][1];
+          if (ni < 0 || nj < 0 || ni >= NM.w || nj >= NM.h) continue;
+          const nk = nj * NM.w + ni;
+          if (y[nk] === NM.blocked) continue;
+          link[k] |= (1 << d);
+          link[nk] |= (1 << ((d + 2) % 4));
+        }
+      }
+    }
+  }
   return {
     spawns: {
       BL: buildSpawns(MESH_SPAWNS.T, 10, yaw.BL, S),
       GR: buildSpawns(MESH_SPAWNS.CT, 10, yaw.GR, S),
     },
     lampSpots, meshes, materials: matDefs,
-    nav: { ...LAYOUT.nav, field: navField(G) },
+    nav: { ...LAYOUT.nav, field },
     update(dt, t) { for (const f of anim) f(dt, t); },
   };
 }

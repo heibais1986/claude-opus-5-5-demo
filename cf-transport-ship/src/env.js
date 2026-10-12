@@ -1,14 +1,22 @@
 // 天空 / 云 / 海洋 / 光照
 import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
+// CC0 全景天空：tools/hdr2png.mjs 把 Poly Haven 的 5.4 MB .hdr 压成 512x256 的 8 位 PNG。
+// esbuild 的 base64 loader 只给裸 base64，得自己补 data URL 前缀。
+import skyDayB64 from '../assets/cc0/polyhaven/kloofendal-day-puresky_512.png';
+
+const HDRI = { day: 'data:image/png;base64,' + skyDayB64 };
+const HDRI_TEX = {}; // 按 key 缓存解码后的全景，切时段/重开对局不必再解一次
 
 // 预设按 `${地图id}_${时段}` 命名：海面地图用 deep/shallow 描述水体，
 // 陆地地图用 ground 描述环境球下方的地面反照。
+// hdri 只挂在白天预设上：一张正午全景替不了黄昏的低角度暖色，
+// 而且它只换环境反射，背景仍走解析 Sky，时段才不会被摄影太阳牵着走。
 export const PRESETS = {
   ship_day: {
     elev: 40, azim: 128, turbidity: 3.0, rayleigh: 1.8, mie: 0.0022, mieG: 0.76,
     sunColor: 0xfff0dc, sunInt: 3.6, hemiSky: 0xcfe2f4, hemiGround: 0x4a5560, hemiInt: 0.15, envInt: 0.5,
-    exposure: 0.6, fog: 0xa9c2d6, fogDensity: 0.0011,
+    exposure: 0.6, fog: 0xa9c2d6, fogDensity: 0.0011, hdri: 'day',
     deep: 0x03263f, shallow: 0x0f6a78, skyZen: 0x3f78b8, skyHor: 0xbcd3e4, cloudLit: 0xffffff, cloudShade: 0x8d9aa8, cloudCover: 0.47,
   },
   ship_dusk: {
@@ -20,7 +28,7 @@ export const PRESETS = {
   dust2_day: {
     elev: 56, azim: 96, turbidity: 5.5, rayleigh: 1.1, mie: 0.0085, mieG: 0.8,
     sunColor: 0xfff3da, sunInt: 4.0, hemiSky: 0xe6d6b6, hemiGround: 0x8f7549, hemiInt: 0.3, envInt: 0.55,
-    exposure: 0.56, fog: 0xd9c69c, fogDensity: 0.0016,
+    exposure: 0.56, fog: 0xd9c69c, fogDensity: 0.0016, hdri: 'day',
     ground: 0x6d5f45, skyZen: 0x4f7fc0, skyHor: 0xdacbaa, cloudLit: 0xffffff, cloudShade: 0xa89a88, cloudCover: 0.32,
   },
   dust2_dusk: {
@@ -304,6 +312,32 @@ export class Environment {
     this.scene.environmentIntensity = this.preset.envInt;
     for (const s of this.extraScenes || []) s.environment = this.envRT.texture;
     sky2.material.dispose(); disk.geometry.dispose(); disk.material.dispose();
+    this._applyHdriEnv();
+  }
+  // 摄影全景只替换环境反射：背景仍用解析 Sky，否则时段、雾色和太阳位置会被一张正午天空绑死。
+  // 解码是异步的，所以先留着解析结果，图到位再换；失败就一直用解析环境。
+  _applyHdriEnv() {
+    const key = this.preset.hdri;
+    if (!key || !HDRI[key]) return;
+    const cached = HDRI_TEX[key];
+    if (cached === 'loading') return;
+    if (cached) { this._useHdriEnv(cached); return; }
+    HDRI_TEX[key] = 'loading';
+    new THREE.TextureLoader().load(HDRI[key], (tex) => {
+      tex.mapping = THREE.EquirectangularReflectionMapping;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      HDRI_TEX[key] = tex;
+      this._useHdriEnv(tex);
+    }, undefined, () => { delete HDRI_TEX[key]; });
+  }
+  _useHdriEnv(tex) {
+    if (this.preset.hdri === undefined) return; // 回调到达时可能已切到黄昏
+    const rt = this.pmrem.fromEquirectangular(tex);
+    if (this.hdriRT) this.hdriRT.dispose();
+    this.hdriRT = rt;
+    this.scene.environment = rt.texture;
+    this.scene.environmentIntensity = this.preset.envInt;
+    for (const s of this.extraScenes || []) s.environment = rt.texture;
   }
   update(dt, t, camPos) {
     this.shipDist += dt * this.shipSpeed;

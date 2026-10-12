@@ -97,6 +97,70 @@ export function addColliders(world, G, bounds, S = makeSampler(G)) {
   world.build();
 }
 
+// 门洞修复：把烘焙数据里被封死的门洞挖成开放门洞。
+// 做法：与门洞矩形相交、且底面低于门楣的实体盒，按矩形边界切分（矩形外的部分保留，
+// 矩形内门楣以上的部分保留），再在矩形内铺一块地面。最后重建碰撞空间索引。
+// doors: [{x0,x1,z0,z1,top,ground}]，见 dust2-layout.js 的 DOORS。
+export function carveDoorways(world, S, doors) {
+  const BASE = -9;
+  // 门洞地面与周边地面齐平：取矩形周边已有地面盒高度的中位数（限 D.ground ± 0.5 内），
+  // 避免新地面低于四周形成持续上台阶——高 0.04 的邻块会在 blocked() 头顶检查里误判。
+  for (const D of doors) {
+    const tops = [];
+    for (const c of world.colliders) {
+      if (c.tag !== 'floor') continue;
+      if (c.maxX < D.x0 - 0.6 || c.minX > D.x1 + 0.6 || c.maxZ < D.z0 - 0.6 || c.minZ > D.z1 + 0.6) continue;
+      if (Math.abs(c.top - D.ground) > 0.5) continue;
+      tops.push(c.top);
+    }
+    if (tops.length) {
+      tops.sort((a, b) => a - b);
+      D.ground = tops[Math.floor(tops.length / 2)];
+    }
+  }
+  const out = [];
+  for (const c of world.colliders) {
+    const D = doors.find((d) => {
+      const ct = d.cutTop ?? d.top;
+      return c.solid && c.tag !== 'clip' &&
+        c.bottom < ct &&
+        c.maxX > d.x0 && c.minX < d.x1 && c.maxZ > d.z0 && c.minZ < d.z1;
+    });
+    if (!D) {
+      out.push({ x: c.x, y: c.y, z: c.z, sx: c.maxX - c.minX, sy: c.top - c.bottom, sz: c.maxZ - c.minZ, yaw: c.yaw, mat: c.mat, solid: c.solid, bullet: c.bullet, sight: c.sight, surface: c.surface, tag: c.tag });
+      continue;
+    }
+    const ct = D.cutTop ?? D.top;
+    const ix0 = Math.max(c.minX, D.x0), ix1 = Math.min(c.maxX, D.x1);
+    const iz0 = Math.max(c.minZ, D.z0), iz1 = Math.min(c.maxZ, D.z1);
+    const parts = [];
+    if (c.minX < ix0) parts.push([c.minX, ix0, c.minZ, c.maxZ, c.bottom, c.top]);
+    if (c.maxX > ix1) parts.push([ix1, c.maxX, c.minZ, c.maxZ, c.bottom, c.top]);
+    if (c.minZ < iz0) parts.push([ix0, ix1, c.minZ, iz0, c.bottom, c.top]);
+    if (c.maxZ > iz1) parts.push([ix0, ix1, iz1, c.maxZ, c.bottom, c.top]);
+    if (c.top > ct) parts.push([ix0, ix1, iz0, iz1, Math.max(c.bottom, ct), c.top]);
+    for (const [ax0, ax1, az0, az1, ay0, ay1] of parts) {
+      if (ax1 - ax0 < 0.05 || az1 - az0 < 0.05 || ay1 - ay0 < 0.05) continue;
+      const px = (ax0 + ax1) / 2, pz = (az0 + az1) / 2;
+      out.push({
+        x: px, y: (ay0 + ay1) / 2, z: pz, sx: ax1 - ax0, sy: ay1 - ay0, sz: az1 - az0, yaw: 0,
+        mat: c.mat, solid: true, bullet: c.bullet, sight: c.sight, surface: c.surface,
+        tag: (ay1 - S.groundAt(px, pz) < 0.4) ? 'floor' : 'solid',
+      });
+    }
+  }
+  for (const D of doors) {
+    out.push({
+      x: (D.x0 + D.x1) / 2, y: (BASE + D.ground) / 2, z: (D.z0 + D.z1) / 2,
+      sx: D.x1 - D.x0, sy: D.ground - BASE, sz: D.z1 - D.z0, yaw: 0,
+      mat: 'concrete', solid: true, bullet: 'block', sight: true, surface: 'sand', tag: 'floor',
+    });
+  }
+  world.colliders.length = 0;
+  for (const o of out) world.add(o);
+  world.build();
+}
+
 // 出生点：官方点位吸附到可走格，人数不足时按固定偏移补位
 export function buildSpawns(list, n, yaw, S) {
   const place = (x, z) => {

@@ -12,6 +12,8 @@ const res = await esbuild.build({
   target: ['es2020'],
   write: false,
   legalComments: 'none',
+  // CC0 采样/贴图以 base64 data URL 内联，保持单文件产物
+  loader: { '.ogg': 'base64', '.png': 'base64' },
   define: { 'process.env.NODE_ENV': '"production"' },
 });
 const js = res.outputFiles[0].text;
