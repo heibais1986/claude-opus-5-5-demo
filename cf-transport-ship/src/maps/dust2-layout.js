@@ -78,7 +78,7 @@ export const LAYOUT = {
   bot: BOT,
 
   // forward = (-sin yaw, -cos yaw)：+Z 为北，故朝北 = π，朝南 = 0
-  spawnYaw: { BL: Math.PI, GR: 0 },
+  spawnYaw: { BL: 0, GR: Math.PI },
   sites: [
     { id: 'A', x: MESH_SITES.A.x, z: MESH_SITES.A.z, r: MESH_SITES.A.r },
     { id: 'B', x: MESH_SITES.B.x, z: MESH_SITES.B.z, r: MESH_SITES.B.r },
