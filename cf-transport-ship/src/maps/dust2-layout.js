@@ -78,7 +78,9 @@ export const LAYOUT = {
   bot: BOT,
 
   // forward = (-sin yaw, -cos yaw)：+Z 为北，故朝北 = π，朝南 = 0
-  spawnYaw: { BL: 0, GR: Math.PI },
+  // 2026-10-13: T 出生面朝 AB 中点（比正北偏东约 8°，按 T 出生点质心实测），开局视线正对包点方向；
+  // 注意：之前误把 BL 写成 -0.1508（那是朝南），已按"朝北=π"的约定纠正为 π+0.1386
+  spawnYaw: { BL: -3.003, GR: 0 },
   sites: [
     { id: 'A', x: MESH_SITES.A.x, z: MESH_SITES.A.z, r: MESH_SITES.A.r },
     { id: 'B', x: MESH_SITES.B.x, z: MESH_SITES.B.z, r: MESH_SITES.B.r },
