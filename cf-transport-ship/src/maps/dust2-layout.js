@@ -29,10 +29,10 @@ for (const l of MESH_LABELS) LAB[l.text.toLowerCase().replace(/ /g, '.')] = [l.x
 const RAW = {
   'T.spawn': LAB['t.spawn'], 'CT.spawn': LAB['ct.spawn'],
   A: LAB.a, B: LAB.b, MID: LAB.mid, LONG: LAB['long.a'], TUNNELS: LAB.tunnels, CATWALK: LAB.catwalk,
-  'long.doors': [40.4, -18.3], 'long.pit': [40.4, -5.0], 'A.main': [37.6, 20.1],
-  'A.short': [16.9, 26.1], 'mid.doors': [-4.4, 16.6], 'upper.mid': [-6.6, 14.2],
-  'mid.window': [-24.6, 13.0], 'B.door': [-29.7, 29.8], 'T.top': [-12.0, -41.6],
-  'B.tunnel.out': [-33.5, 40.7],
+  'long.doors': [-40.4, -18.3], 'long.pit': [-40.4, -5.0], 'A.main': [-37.6, 20.1],
+  'A.short': [-16.9, 26.1], 'mid.doors': [4.4, 16.6], 'upper.mid': [6.6, 14.2],
+  'mid.window': [24.6, 13.0], 'B.door': [29.7, 29.8], 'T.top': [12.0, -41.6],
+  'B.tunnel.out': [33.5, 40.7],
 };
 export const ANCHOR = {};
 for (const k in RAW) ANCHOR[k] = node(...RAW[k]);
@@ -47,25 +47,25 @@ const W = -Math.PI / 2;  // 朝西（-X）
 const BOT = {
   BL: {
     // 开局占线：外长道 / 外中路 / 外地道
-    lanes: [[43.4, -10.0], [-6.8, 4.3], [-38.2, 0.4]].map(([x, z]) => node(x, z)),
+    lanes: [[-43.4, -10.0], [6.8, 4.3], [38.2, 0.4]].map(([x, z]) => node(x, z)),
     // 绕地道打 B 点，三段推进
-    flank: [[-38.2, 0.4], [-37.0, 20.0], [-33.5, 40.7]].map(([x, z]) => node(x, z)),
+    flank: [[38.2, 0.4], [37.0, 20.0], [33.5, 40.7]].map(([x, z]) => node(x, z)),
     holds: [
       [...P('long.doors'), N], [...P('MID'), N], [...P('TUNNELS'), N],
       [...P('A'), S], [...P('CATWALK'), S],
     ],
-    sites: [P('A'), [30, 40], [26, 44], P('B'), [-37, 45], P('B.door')].map(([x, z]) => node(x, z)),
+    sites: [P('A'), [-30, 40], [-26, 44], P('B'), [37, 45], P('B.door')].map(([x, z]) => node(x, z)),
   },
   GR: {
     // 回防：B 门 / 中门后 / A 点
     lanes: [P('B.door'), P('mid.doors'), P('A')].map(([x, z]) => node(x, z)),
     // 从 B 反压地道口
-    flank: [P('B'), [-35.9, 20.5], P('TUNNELS')].map(([x, z]) => node(x, z)),
+    flank: [P('B'), [35.9, 20.5], P('TUNNELS')].map(([x, z]) => node(x, z)),
     holds: [
       [...P('mid.doors'), S], [...P('A'), S], [...P('B'), S],
       [...P('long.pit'), S], [...P('CATWALK'), S],
     ],
-    sites: [P('A'), [30, 40], P('B'), P('B.door'), P('A.short'), P('mid.doors')].map(([x, z]) => node(x, z)),
+    sites: [P('A'), [-30, 40], P('B'), P('B.door'), P('A.short'), P('mid.doors')].map(([x, z]) => node(x, z)),
   },
 };
 
@@ -78,9 +78,8 @@ export const LAYOUT = {
   bot: BOT,
 
   // forward = (-sin yaw, -cos yaw)：+Z 为北，故朝北 = π，朝南 = 0
-  // 2026-10-13: T 出生面朝 AB 中点（比正北偏东约 8°，按 T 出生点质心实测），开局视线正对包点方向；
-  // 注意：之前误把 BL 写成 -0.1508（那是朝南），已按"朝北=π"的约定纠正为 π+0.1386
-  spawnYaw: { BL: -3.003, GR: 0 },
+  // 2026-10-14: 数据 x 镜像后，yaw 取反（-3.003 -> 3.003），仍正对 AB 中点
+  spawnYaw: { BL: 3.003, GR: 0 },
   sites: [
     { id: 'A', x: MESH_SITES.A.x, z: MESH_SITES.A.z, r: MESH_SITES.A.r },
     { id: 'B', x: MESH_SITES.B.x, z: MESH_SITES.B.z, r: MESH_SITES.B.r },
@@ -119,8 +118,8 @@ export const LAYOUT = {
 // 渲染删掉门板三角面，碰撞挖洞并铺地面，导航补连通。
 // x0/x1/z0/z1 为门洞矩形（实测），top 为门楣下沿（该高度以上保留），ground 为门洞地面高。
 export const DOORS = [
-  { id: 'long', x0: 38.6, x1: 44.2, z0: -21.4, z1: -19.6, top: -1.5, ground: -4.62 },
-  { id: 'mid', x0: -7.3, x1: -3.1, z0: 14.5, z1: 17.5, top: 0.6, ground: -3.12 },
+  { id: 'long', x0: -44.2, x1: -38.6, z0: -21.4, z1: -19.6, top: -1.5, ground: -4.62 },
+  { id: 'mid', x0: 3.1, x1: 7.3, z0: 14.5, z1: 17.5, top: 0.6, ground: -3.12 },
   // 地道出口：门框杂碎多，碰撞切到天花板以上（渲染仍只删门板高度），避免站上台阶后顶头
-  { id: 'tunnel', x0: -33.8, x1: -30.2, z0: 40.8, z1: 44.8, top: 2.2, cutTop: 10, ground: 0.2 },
+  { id: 'tunnel', x0: 30.2, x1: 33.8, z0: 40.8, z1: 44.8, top: 2.2, cutTop: 10, ground: 0.2 },
 ];

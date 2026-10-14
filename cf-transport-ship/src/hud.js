@@ -295,6 +295,7 @@ export class HUD {
     ctx.save();
     ctx.translate(W / 2, H / 2);
     ctx.rotate(me.yaw);
+    // 2026-10-14: 数据已做 x 镜像翻正，雷达不再需要补偿镜像
     ctx.scale(zoom, zoom);
     ctx.translate(-(me.pos.x + ox) * S, -(me.pos.z + oz) * S);
     ctx.globalAlpha = 0.95;
