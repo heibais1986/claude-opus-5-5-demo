@@ -249,7 +249,10 @@ export class World {
       p.y += ent.vel.y * h;
       if (ent.vel.y <= 0) {
         const probeUp = ent.onGround ? ent.stepHeight : 0.001;
-        const sup = this.support(p.x, p.z, r * 0.92, prevY + 0.001);
+        // 支撑面必须用与水平碰撞同一个半径来问：上台阶的判定半径是 r，
+        // 若这里缩到 0.92r，刚踏上去的那一格（胶囊只压住台阶边缘几厘米）立刻被判踏空，
+        // 人就在台阶前无限「上去 → 掉回来」，不按空格永远过不去。
+        const sup = this.support(p.x, p.z, r, prevY + 0.001);
         const snap = ent.onGround && ent.vel.y <= 0.01 ? Math.max(0.3, -ent.vel.y * h) : 0;
         if (sup && p.y <= sup.y + snap) {
           if (!ent.onGround) { landed = true; landSpeed = -ent.vel.y; }
