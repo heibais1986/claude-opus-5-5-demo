@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { WEAPONS, WeaponState, currentSpread, recoilKick } from './weapons.js';
 import { Soldier } from './character.js';
 import { makeSoldier } from './models-ext.js';
+import { STEP_H } from './physics.js';
 
 export const STAND_H = 1.8, CROUCH_H = 1.15, EYE_STAND = 1.62, EYE_CROUCH = 1.05;
 const GRAV = 19, JUMP_V = 6.6, RUN = 5.7;
@@ -11,7 +12,7 @@ export class Actor {
   constructor(game, { id, name, team, isPlayer = false }) {
     this.game = game; this.id = id; this.name = name; this.team = team; this.isPlayer = isPlayer;
     this.pos = new THREE.Vector3(); this.vel = new THREE.Vector3();
-    this.radius = 0.36; this.height = STAND_H; this.stepHeight = 0.42;
+    this.radius = 0.36; this.height = STAND_H; this.stepHeight = STEP_H;
     this.onGround = false; this.crouch = false; this.eyeH = EYE_STAND;
     this.yaw = 0; this.pitch = 0; this.punchP = 0; this.punchY = 0; this.aimPunch = 0;
     this.hp = 100; this.armor = 100; this.alive = false; this.deadT = 0; this.respawnT = 0; this.protectT = 0;

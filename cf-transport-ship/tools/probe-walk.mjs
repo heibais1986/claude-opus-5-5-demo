@@ -8,7 +8,7 @@
 //
 // 用法：node tools/probe-walk.mjs [采样格数] [每方向按住几秒] [随机种子]
 //   默认 node tools/probe-walk.mjs 400 1.6 1
-import { World, NavGrid } from '../src/physics.js';
+import { World, NavGrid, STEP_H } from '../src/physics.js';
 import { decodeGeo, navField, makeSampler, addColliders, carveDoorways } from '../src/maps/geo.js';
 import { LAYOUT, DOORS } from '../src/maps/dust2-layout.js';
 
@@ -17,7 +17,7 @@ const SECONDS = +(process.argv[3] || 1.6);
 const SEED = +(process.argv[4] || 1);
 
 const GRAV = 19, RUN = 5.7, VOID_Y = -5.5;
-const RADIUS = 0.36, HEIGHT = 1.8, STEP_H = 0.42;
+const RADIUS = 0.36, HEIGHT = 1.8;
 const DT = 1 / 60;
 
 // 固定种子的 LCG：同一份数据每次跑出来的抽检点一样，方便对比前后
