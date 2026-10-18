@@ -23,7 +23,7 @@ const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _d = new THREE.Vector
 export class Game {
   constructor() {
     this.time = 0; this.frame = 0; this.matchId = 0;
-    this.playing = false; this.paused = false; this.locked = false;
+    this.playing = false; this.paused = false; this.locked = false; this.lockAt = 0;
     this.actors = []; this.nades = []; this.timers = []; this.tags = [];
     this.score = { BL: 0, GR: 0 };
     this.audio = audio;
@@ -234,6 +234,8 @@ export class Game {
   }
   onLockChange() {
     this.locked = document.pointerLockElement === document.getElementById('c');
+    // 记下锁定时刻：刚锁定那一两帧浏览器会补一记「光标跳回屏幕中心」的大位移，输入侧要吞掉
+    if (this.locked) this.lockAt = performance.now();
     document.body.classList.toggle('lk', this.locked);
     if (this.locked) {
       if (this.paused) this.resume(true);

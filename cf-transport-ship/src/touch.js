@@ -3,7 +3,10 @@
 // 支持自定义布局：暂停菜单 → 自定义按键布局，拖动调整位置、滑杆调整大小，保存到 localStorage
 const STORE = 'cf_ship_touch_layout';
 const PAD_SIZE = 140, KNOB = 56;
-const PAD_TRAVEL = 60, LOOK_SCALE = 1.6;
+const PAD_TRAVEL = 60, LOOK_SCALE = 1.6 * (0.0022 / (0.022 * Math.PI / 180));
+// LOOK_SCALE：手指划过的像素折成「等效鼠标计数」，再走 player.js 那套灵敏度（现在是
+// CS 1.6 的刻度 0.022°/计数，比旧刻度小 5.73 倍）。乘这个比例是为了让手机的视角手感
+// 跟换刻度之前一模一样——换刻度只该动鼠标，不该顺手把触屏也改慢。
 const MIN_SCALE = 60, MAX_SCALE = 160, SCALE_STEP = 5;
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 

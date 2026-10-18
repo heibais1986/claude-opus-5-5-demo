@@ -2,6 +2,21 @@
 import * as THREE from 'three';
 import { Actor } from './actor.js';
 
+// ---------- 鼠标灵敏度 ----------
+// 刻度和 CS 1.6 / Source 的 sensitivity 对齐：1 个鼠标计数 = sens × m_yaw 度，
+// m_yaw 默认 0.022（GoldSrc、Source 都是这个数）。所以面板里填几，手感和 CS 1.6
+// 里填几一样：同样的 DPI 下，转 360° 需要的鼠标距离相同。
+// 以前这里是 0.0022 弧度/计数 = 0.126°/计数 ≈ CS 的 5.7，默认值就快了将近 6 倍，
+// 「稍微动一下就太多、往回拉又过了」就是这儿来的。
+export const SENS_DEFAULT = 2;                        // 默认手感（CS 1.6 里常见 1~3）
+export const SENS_MIN = 0.1, SENS_MAX = 6, SENS_STEP = 0.01;
+export const SENS_RAD = 0.022 * Math.PI / 180;        // 每点灵敏度、每计数转多少弧度
+
+// 单条 mousemove 的封顶值（计数）。真甩枪一帧最多也就几百到一两千，
+// 超过这个数基本是浏览器异常（切窗口、系统弹窗之后补的位移），削掉免得视角乱跳。
+const STEP_MAX = 3000;
+const clampStep = (v) => (v > STEP_MAX ? STEP_MAX : v < -STEP_MAX ? -STEP_MAX : v);
+
 export class Player extends Actor {
   constructor(game, o) {
     super(game, { ...o, isPlayer: true });
@@ -38,16 +53,18 @@ export class Player extends Actor {
     window.addEventListener('contextmenu', (e) => e.preventDefault());
     window.addEventListener('mousemove', (e) => {
       const p = P(); if (!p || !g.locked) return;
-      // 过滤浏览器偶发的异常大位移
-      if (Math.abs(e.movementX) > 400 || Math.abs(e.movementY) > 400) return;
-      p.mouse.dx += e.movementX; p.mouse.dy += e.movementY;
+      // 刚锁定那一瞬间浏览器会补一记「光标从原位置跳回屏幕中心」的大位移，直接吞掉。
+      if (performance.now() - g.lockAt < 120) return;
+      // 单条位移只封顶（钳制），不再整条丢掉：快速甩枪时浏览器会把一帧里攒下的位移
+      // 合成一条送过来（高 DPI 下轻松过千），整条丢掉就变成「甩了没反应、再往回拉又过头」。
+      p.mouse.dx += clampStep(e.movementX); p.mouse.dy += clampStep(e.movementY);
     });
     window.addEventListener('wheel', (e) => { const p = P(); if (p && g.locked) p.mouse.wheel += Math.sign(e.deltaY); }, { passive: true });
   }
   consumePressed(code) { const p = this.pressed.has(code); this.pressed.delete(code); return p; }
   update(dt) {
     const g = this.game, K = this.keys;
-    const sens = g.opts.sens * 0.0022;
+    const sens = g.opts.sens * SENS_RAD;
     let dx = this.mouse.dx, dy = this.mouse.dy;
     this.mouse.dx = this.mouse.dy = 0;
     if (this.touchLook) { dx += this.touchLook.x; dy += this.touchLook.y; this.touchLook.x = this.touchLook.y = 0; }

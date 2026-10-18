@@ -1,9 +1,13 @@
 // HUD 与菜单（DOM）
 import { WEAPONS, PRIMARIES } from './weapons.js';
 import { MAPS, pickMap } from './maps/index.js';
+import { SENS_DEFAULT, SENS_MIN, SENS_MAX, SENS_STEP } from './player.js';
 
 const TEAM_CN = { BL: '潜伏者', GR: '保卫者' };
 const $ = (s, r = document) => r.querySelector(s);
+// 存档版本：2 = 灵敏度换成 CS 1.6 的刻度（见 player.js）。旧存档里那个数是另一套刻度
+// （约等于 CS 的 5.7 倍），直接搬过来会快得没法瞄，所以升版本时把灵敏度退回新默认。
+const OPTS_VER = 2;
 
 const HS_ICON = 'data:image/svg+xml;utf8,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><g fill="none" stroke="#ff4030" stroke-width="3"><circle cx="20" cy="20" r="11"/><path d="M20 2v10M20 28v10M2 20h10M28 20h10"/></g><circle cx="20" cy="20" r="3.5" fill="#ff4030"/></svg>`);
 const WB_ICON = 'data:image/svg+xml;utf8,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><rect x="15" y="4" width="10" height="32" fill="#bbb"/><path d="M2 20h36" stroke="#ffd24a" stroke-width="3"/></svg>`);
@@ -25,8 +29,12 @@ export class HUD {
     this.slotsT = 0;
     this.radarCtx = this.el.radar.getContext('2d');
     const touch = matchMedia('(pointer:coarse)').matches;
-    this.opts = { map: 'ship', team: 'BL', primary: 'ak47', size: 6, diff: 'normal', goal: 50, tod: 'day', quality: touch ? 'low' : 'high', sens: 1.0, fov: 78, vol: 0.8 };
-    try { Object.assign(this.opts, JSON.parse(localStorage.getItem('cf_ship_opts') || '{}')); } catch (e) { /* 忽略 */ }
+    this.opts = { map: 'ship', team: 'BL', primary: 'ak47', size: 6, diff: 'normal', goal: 50, tod: 'day', quality: touch ? 'low' : 'high', sens: SENS_DEFAULT, fov: 78, vol: 0.8, optVer: OPTS_VER };
+    try {
+      const raw = JSON.parse(localStorage.getItem('cf_ship_opts') || '{}');
+      Object.assign(this.opts, raw);
+      if (raw.optVer !== OPTS_VER) { this.opts.optVer = OPTS_VER; this.opts.sens = SENS_DEFAULT; this.saveOpts(); }
+    } catch (e) { /* 忽略 */ }
     try { const qm = new URLSearchParams(location.search).get('map'); if (qm) this.opts.map = qm; } catch (e) { /* 忽略 */ }
     this.mapDef = pickMap(this.opts.map);
     this.opts.map = this.mapDef.id;
@@ -401,18 +409,18 @@ const TEMPLATE = `
         <div class="opt"><div class="lab">画质</div><div class="seg" data-k="quality"><button data-v="low">流畅</button><button data-v="medium">均衡</button><button data-v="high">极致</button></div></div>
       </div>
       <div class="row3">
-        <div class="opt"><div class="lab">灵敏度</div><div class="slider" data-k="sens"><input type="range" min="0.2" max="3" step="0.05"><span></span></div></div>
+        <div class="opt"><div class="lab">灵敏度</div><div class="slider" data-k="sens"><input type="range" min="${SENS_MIN}" max="${SENS_MAX}" step="${SENS_STEP}"><span></span></div></div>
         <div class="opt"><div class="lab">视野 FOV</div><div class="slider" data-k="fov"><input type="range" min="65" max="100" step="1"><span></span></div></div>
         <div class="opt"><div class="lab">音量</div><div class="slider" data-k="vol"><input type="range" min="0" max="1" step="0.05"><span></span></div></div>
       </div>
       <button class="go" id="btnStart">开 始 游 戏</button>
-      <div class="note">点击开始后鼠标将被锁定，按 Esc 暂停。画质或地图切换会重新加载页面。</div>
+      <div class="note">点击开始后鼠标将被锁定，按 Esc 暂停。灵敏度与 CS 1.6 的 sensitivity 同刻度：CS 里填几这里就填几。画质或地图切换会重新加载页面。</div>
     </div>
   </div>
 </div>
 
 <div id="pause" class="screen hidden"><div class="pauseBox"><h2>暂停</h2>
-  <div class="opt"><div class="lab">鼠标灵敏度</div><div class="slider" data-k="sens"><input type="range" min="0.2" max="3" step="0.05"><span></span></div></div>
+  <div class="opt"><div class="lab">鼠标灵敏度</div><div class="slider" data-k="sens"><input type="range" min="${SENS_MIN}" max="${SENS_MAX}" step="${SENS_STEP}"><span></span></div></div>
   <div class="opt"><div class="lab">视野 FOV</div><div class="slider" data-k="fov"><input type="range" min="65" max="100" step="1"><span></span></div></div>
   <div class="opt"><div class="lab">音量</div><div class="slider" data-k="vol"><input type="range" min="0" max="1" step="0.05"><span></span></div></div>
   <div class="opt"><div class="lab">时间</div><div class="seg" data-k="tod"><button data-v="day">白天</button><button data-v="dusk">黄昏</button></div></div>
