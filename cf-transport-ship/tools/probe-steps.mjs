@@ -1,156 +1,182 @@
-// 台阶体检：真实碰撞体 + 玩家移动物理，沿「连续上台阶的导航格」逐段走一遍，
-// 找出「导航连通但人走不上去」的楼梯（必须跳、必须后退的那种）。
+// de_dust2 台阶回归探针：在导航场里找出「连续上台阶」的地段，用真实的 World.move 走一遍。
 //
-// 每段楼梯不只试一次：起点沿走行方向按相位扫过去。台阶抖动是亚帧级的——
-// 角色一帧走 0.095m，只有恰好停在「刚蹭到台阶立面」那一小段相位里，
-// 「上台阶判定用半径 r、脚下支撑面却用 0.92r」才会露出来：人刚被抬上台阶，
-// 下一秒又被判踏空掉回来，于原地无限上下。只测一个相位必然漏掉。
+// 这个探针是那个 bug 的回归闸门。World.move 里水平碰撞按半径 r 判重叠，
+// 上台阶成功后紧接着的支撑查询却写成 r * 0.92：角色贴住踏面往上迈时，
+// 只有 0.36 - 0.36*0.92 = 2.9cm 的重叠会被算作「站在阶面上」，
+// 一旦迈上去的落点偏外侧，支撑查询就查不到这块踏面 -> [上台阶] 成功、[踏空] 立刻触发，
+// 角色掉回原位。表现就是「台阶前反复抖动、走不过去，必须后退再按空格」。
 //
-// 用法：node tools/probe-steps.mjs [每段限时秒] [最多测多少段] [相位步长]
+// 抖动是亚帧级的：同一个起点采一次，经常正好落在能过的那一侧，看着像 0 失败。
+// 所以每条地段都要沿走向扫一遍接近相位，把落点铺满整格。
+//
+// 用法：node tools/probe-steps.mjs [最少连续阶数] [相位采样数] [相位步长(米)]
+//   默认 node tools/probe-steps.mjs 4 10 0.05
 import { World, NavGrid } from '../src/physics.js';
-import { decodeGeo, makeSampler, addColliders, carveDoorways, navField } from '../src/maps/geo.js';
+import { decodeGeo, navField, makeSampler, addColliders, carveDoorways } from '../src/maps/geo.js';
 import { LAYOUT, DOORS } from '../src/maps/dust2-layout.js';
 
-const LIMIT = Number(process.argv[2] ?? 6);
-const MAXRUN = Number(process.argv[3] ?? 400);
-const PHASE = Number(process.argv[4] ?? 0.05);   // 起点相位步长，0 表示只测格中心
+const MIN_LEN = +(process.argv[2] || 4);
+const PHASES = +(process.argv[3] || 10);
+const PHASE_H = +(process.argv[4] || 0.05);
 
+const GRAV = 19, RUN = 5.7;
+const RADIUS = 0.36, HEIGHT = 1.8, STEP_H = 0.42;
+const DT = 1 / 60, FRAMES = 180;          // 3 秒足够走完 4~5 米台阶
+const STEP_MIN = 0.10;
+// 只收「不该需要跳」的台阶：角色 stepHeight 是 0.42，这里留出余量取 0.40。
+// 高于 stepHeight 的坎（地图上真有 0.43 的）本来就该按空格，导航的 UP 也特意放宽到 1.0
+// 把它们标成可走，那种地段不算 bug，探针不该把它们当失败。
+const STEP_MAX = 0.40;
+const DIRS = [[1, 0], [0, 1], [-1, 0], [0, -1]];
+
+// ---------- 地图：与运行时同一条装配路径 ----------
 const G = await decodeGeo();
 const S = makeSampler(G);
 const world = new World();
 addColliders(world, G, LAYOUT.bounds, S);
 carveDoorways(world, S, DOORS);
-const n = LAYOUT.nav;
-const nav = new NavGrid(world, n.x0, n.z0, n.x1, n.z1, n.cell, n.r, navField(G));
 
-// ---------- 玩家物理替身：与 actor.js 同一套 ----------
-const GRAV = 19, RUN = 5.7, RADIUS = 0.36, HEIGHT = 1.8, STEP = 0.42;
-function makeWalker(x, z, y) {
-  return {
-    pos: { x, y, z }, vel: { x: 0, y: 0, z: 0 },
-    radius: RADIUS, height: HEIGHT, stepHeight: STEP,
+const N = LAYOUT.nav;
+const field = navField(G);
+// 门洞修复（导航）：运行时在 dust2.js 里对同一份 field 做同样的事，
+// 否则烘焙导航在门洞处是断的，探针会把门口当成墙。
+{
+  const NM = N, y = field.y, link = field.link;
+  for (const D of DOORS) {
+    const cells = [];
+    for (let j = 0; j < NM.h; j++) for (let i = 0; i < NM.w; i++) {
+      const cx = NM.x0 + (i + 0.5) * NM.cell, cz = NM.z0 + (j + 0.5) * NM.cell;
+      if (cx < D.x0 || cx > D.x1 || cz < D.z0 || cz > D.z1) continue;
+      const k = j * NM.w + i;
+      y[k] = Math.round(D.ground * 100);
+      cells.push(k);
+    }
+    for (const k of cells) {
+      const i = k % NM.w, j = (k / NM.w) | 0;
+      for (let d = 0; d < 4; d++) {
+        const ni = i + DIRS[d][0], nj = j + DIRS[d][1];
+        if (ni < 0 || nj < 0 || ni >= NM.w || nj >= NM.h) continue;
+        const nk = nj * NM.w + ni;
+        if (y[nk] === NM.blocked) continue;
+        link[k] |= (1 << d);
+        link[nk] |= (1 << ((d + 2) % 4));
+      }
+    }
+  }
+}
+const nav = new NavGrid(world, N.x0, N.z0, N.x1, N.z1, N.cell, N.r, field);
+
+// ---------- 找出连续上台阶的地段 ----------
+const cellOf = (i, j) => (i < 0 || j < 0 || i >= nav.w || j >= nav.h ? -1 : j * nav.w + i);
+const cx = (k) => N.x0 + ((k % nav.w) + 0.5) * nav.cell;
+const cz = (k) => N.z0 + (((k / nav.w) | 0) + 0.5) * nav.cell;
+
+const runs = [];
+for (let j = 0; j < nav.h; j++) for (let i = 0; i < nav.w; i++) {
+  const k0 = j * nav.w + i;
+  if (nav.block[k0]) continue;
+  for (let d = 0; d < 4; d++) {
+    const [di, dj] = DIRS[d];
+    // 只从坡底起步：上一格也是同向台阶就说明这不是起点，避免同一条坡被正反各记一次
+    const pk = cellOf(i - di, j - dj);
+    if (pk >= 0 && !nav.block[pk]) {
+      const dh = nav.ground[k0] - nav.ground[pk];
+      if (dh >= STEP_MIN && dh <= STEP_MAX) continue;
+    }
+    let cells = [k0], k = k0;
+    for (;;) {
+      const ci = (k % nav.w) + di, cj = ((k / nav.w) | 0) + dj;
+      const nk = cellOf(ci, cj);
+      if (nk < 0 || nav.block[nk]) break;
+      if (!(nav.link[k] & (1 << d))) break;      // 导航自己都不认为这步能走，不算台阶
+      const dh = nav.ground[nk] - nav.ground[k];
+      if (dh < STEP_MIN || dh > STEP_MAX) break;
+      cells.push(nk); k = nk;
+    }
+    if (cells.length - 1 >= MIN_LEN) runs.push({ d, cells });
+  }
+}
+// 去掉被更长地段整段包住的子段
+const kept = runs.filter((r) => !runs.some((o) =>
+  o !== r && o.d === r.d && o.cells.length > r.cells.length && o.cells.includes(r.cells[0])));
+
+// ---------- 用真实的 World.move 走一遍 ----------
+// 判据不是「终点在哪」而是「有没有爬完整段并且站住」：
+//   passed   —— 走过了坡顶格中心（说明整段都迈上去了）
+//   yAtTop   —— 越过坡顶那一刻的高度必须贴着坡顶
+//   slips    —— 到达过坡顶高度之后又掉回坡顶以下 0.3m 的次数
+// 抖动型 bug 正是 slips > 0：爬上去 -> 立刻掉回来 -> 再爬，来回死循环。
+function walkOnce(run, off) {
+  const [dx, dz] = DIRS[run.d];
+  const k0 = run.cells[0], kT = run.cells[run.cells.length - 1];
+  const y0 = nav.ground[k0], yT = nav.ground[kT];
+  const sx = cx(k0) + dx * off, sz = cz(k0) + dz * off;
+  const distTop = (cx(kT) - sx) * dx + (cz(kT) - sz) * dz;
+  const ent = {
+    pos: { x: sx, y: y0, z: sz }, vel: { x: 0, y: 0, z: 0 },
+    radius: RADIUS, height: HEIGHT, stepHeight: STEP_H,
     onGround: true, ground: null, stepped: 0,
   };
-}
-function step(w, wx, wz, dt) {
-  const v = w.vel, wishSpeed = RUN;
-  if (w.onGround) {
-    const sp = Math.hypot(v.x, v.z);
-    if (sp > 0) { const ns = Math.max(0, sp - Math.max(sp, 1.5) * 9 * dt) / sp; v.x *= ns; v.z *= ns; }
-    const cur = v.x * wx + v.z * wz, add = wishSpeed - cur;
-    if (add > 0) { const acc = Math.min(11 * dt * wishSpeed, add); v.x += acc * wx; v.z += acc * wz; }
-  } else {
-    const ws = Math.min(wishSpeed, 1.2), cur = v.x * wx + v.z * wz, add = ws - cur;
-    if (add > 0) { const acc = Math.min(12 * dt * ws, add); v.x += acc * wx; v.z += acc * wz; }
-  }
-  v.y -= GRAV * dt;
-  world.move(w, dt);
-  return w;
-}
-// 从 A 沿给定方向按住 W 走到 B，返回进度与卡住时长
-function walk(ax, az, ay, bx, bz, trace) {
-  const dx = bx - ax, dz = bz - az;
-  const d = Math.hypot(dx, dz) || 1;
-  const wx = dx / d, wz = dz / d;
-  const w = makeWalker(ax, az, ay + 0.02);
-  const dt = 1 / 60;
-  let best = 0, stuckFor = 0, maxStuck = 0;
-  for (let t = 0; t < LIMIT; t += dt) {
-    step(w, wx, wz, dt);
-    const prog = ((w.pos.x - ax) * wx + (w.pos.z - az) * wz) / d;
-    if (prog > best + 1e-4) { best = prog; stuckFor = 0; } else stuckFor += dt;
-    maxStuck = Math.max(maxStuck, stuckFor);
-    if (trace) trace.push([+w.pos.x.toFixed(2), +w.pos.y.toFixed(2), +w.pos.z.toFixed(2)]);
-    if (best > 0.9) break;
-  }
-  return { best, end: [w.pos.x, w.pos.y, w.pos.z], maxStuck };
-}
-
-// ---------- 找连续上台阶的格子串（真实楼梯） ----------
-const W = nav.w, H = nav.h;
-const runs = [];
-for (const [di, dj] of [[1, 0], [0, 1]]) {
-  for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
-    const k = j * W + i;
-    if (nav.block[k]) continue;
-    // 起点：上一格不是「小台阶」（避免从楼梯中段开始）
-    const pi = i - di, pj = j - dj;
-    const pk = pi < 0 || pj < 0 ? -1 : pj * W + pi;
-    if (pk >= 0 && !nav.block[pk]) {
-      const dp = nav.ground[k] - nav.ground[pk];
-      if (dp > 0.1 && dp <= 0.45 && nav.linkOk(pk, di, dj)) continue;
+  let maxY = y0, maxAlong = 0, trace = [], passed = false, yAtTop = null, slips = 0, up = false;
+  for (let f = 0; f < FRAMES; f++) {
+    const v = ent.vel;
+    if (ent.onGround) {
+      const sp = Math.hypot(v.x, v.z);
+      if (sp > 0) {
+        const drop = Math.max(sp, 1.5) * 9 * DT;
+        const ns = Math.max(0, sp - drop) / sp;
+        v.x *= ns; v.z *= ns;
+      }
+      const cur = v.x * dx + v.z * dz, add = RUN - cur;
+      if (add > 0) { const acc = Math.min(11 * DT * RUN, add); v.x += acc * dx; v.z += acc * dz; }
+    } else {
+      const cur = v.x * dx + v.z * dz, add = Math.min(RUN, 1.2) - cur;
+      if (add > 0) { const acc = Math.min(12 * DT * Math.min(RUN, 1.2), add); v.x += acc * dx; v.z += acc * dz; }
     }
-    const cells = [k];
-    let ci = i, cj = j;
-    for (;;) {
-      const ck = cj * W + ci;
-      if (!nav.linkOk(ck, di, dj)) break;
-      const ni = ci + di, nj = cj + dj;
-      if (ni >= W || nj >= H) break;
-      const nk = nj * W + ni;
-      if (nav.block[nk]) break;
-      const dh = nav.ground[nk] - nav.ground[ck];
-      if (dh <= 0.1 || dh > 0.45) break;
-      cells.push(nk); ci = ni; cj = nj;
-    }
-    if (cells.length >= 4) runs.push({ cells, di, dj });
+    v.y -= GRAV * DT;
+    world.move(ent, DT);
+    const p = ent.pos;
+    const along = (p.x - sx) * dx + (p.z - sz) * dz;
+    if (along > maxAlong) maxAlong = along;
+    if (p.y > maxY) maxY = p.y;
+    if (f % 6 === 0) trace.push(p.y.toFixed(2));
+    // 进到坡顶格就算「上去了」：坡顶正中可能顶着墙，位置到不了格心，
+    // 所以留一格半径的余量，收的是高度而不是精确坐标。
+    if (!passed && along >= distTop - 0.35) { passed = true; yAtTop = p.y; }
+    if (p.y >= yT - 0.3) up = true;
+    else if (up) { up = false; slips++; }
+    if (passed && along >= distTop + 0.05) { trace.push(p.y.toFixed(2)); break; }
   }
+  return {
+    ok: passed && yAtTop >= yT - 0.35 && slips === 0,
+    passed, slips, yAtTop, maxY, maxAlong, y: ent.pos.y, yT, distTop, trace,
+  };
 }
-// 去重（同一段会被不同起点重复找到）
-const seen = new Set();
-const uniq = [];
-for (const r of runs) {
-  const key = r.cells.join(',');
-  if (seen.has(key)) continue;
-  seen.add(key); uniq.push(r);
-}
-console.log(`连续上台阶的格子串（≥4 格，每格 0.1~0.45m）：${uniq.length} 段`);
 
-const phases = [];
-if (PHASE > 0) for (let p = 0; p <= n.cell * 0.75 + 1e-9; p += PHASE) phases.push(p);
-else phases.push(0);
-
-let badRuns = 0, badTrials = 0, trials = 0;
-const fails = [];
-for (const r of uniq.slice(0, MAXRUN)) {
-  const a = r.cells[0], b = r.cells[r.cells.length - 1];
-  const [ax, az] = nav.center(a), [bx, bz] = nav.center(b);
-  const dx = bx - ax, dz = bz - az;
-  const d = Math.hypot(dx, dz) || 1;
-  const ux = dx / d, uz = dz / d;
-  const climb = nav.ground[b] - nav.ground[a];
-  let bad = 0, firstFail = null;
-  for (const p of phases) {
-    const sx = ax - ux * p, sz = az - uz * p;
-    // 起点脚底站「这一格导航真正指的地面」上：NavGrid.ground 已是物理实测面。
-    // 用 support(..., Infinity) 取最高面会把人放到头顶棚顶上，测出来的卡住是假象。
-    const sup = world.support(sx, sz, RADIUS, nav.ground[a] + 0.5);
-    const ay = sup ? sup.y : nav.ground[a];
+let segFail = 0, trialFail = 0, trials = 0;
+const bad = [];
+for (const run of kept) {
+  let segBad = 0;
+  for (let p = 0; p < PHASES; p++) {
+    const off = -PHASE_H * ((PHASES - 1) / 2) + p * PHASE_H;
+    const r = walkOnce(run, off);
     trials++;
-    const res = walk(sx, sz, ay, bx, bz, null);
-    if (res.best < 0.9) {
-      bad++; badTrials++;
-      if (!firstFail) firstFail = { p, sx, sz, ay, res };
-    }
+    if (!r.ok) { trialFail++; segBad++; if (bad.length < 6) bad.push({ run, off, r }); }
   }
-  if (bad) {
-    badRuns++;
-    fails.push({ climb, len: r.cells.length, from: [ax, nav.ground[a], az], to: [bx, bz], bad, firstFail });
-  }
+  if (segBad) segFail++;
 }
-console.log(`实测 ${Math.min(uniq.length, MAXRUN)} 段 × ${phases.length} 个起点相位 = ${trials} 次：走不上去的段 ${badRuns}，走不上去的次 ${badTrials}`);
-for (const f of fails.slice(0, 30)) {
-  const ff = f.firstFail;
-  console.log(`  爬升 ${f.climb.toFixed(2)}m / ${f.len} 格  从(${f.from[0].toFixed(1)},${f.from[1].toFixed(2)},${f.from[2].toFixed(1)})`
-    + ` -> (${f.to[0].toFixed(1)},${f.to[1].toFixed(2)})  ${f.bad}/${phases.length} 个相位走不上去`
-    + `  最差停在(${ff.res.end[0].toFixed(2)},${ff.res.end[1].toFixed(2)},${ff.res.end[2].toFixed(2)}) 进度 ${ff.res.best.toFixed(2)} 顶住 ${ff.res.maxStuck.toFixed(1)}s`);
+
+console.log(`台阶地段：${kept.length} 条（连续 >= ${MIN_LEN} 阶，每阶 ${STEP_MIN}~${STEP_MAX} m），`
+  + `每条扫 ${PHASES} 个接近相位，共 ${trials} 次试走`);
+for (const b of bad) {
+  const k0 = b.run.cells[0], kT = b.run.cells[b.run.cells.length - 1];
+  const how = !b.r.passed ? `卡在半路（只走了 ${b.r.maxAlong.toFixed(2)}m / 需 ${b.r.distTop.toFixed(2)}m）`
+    : b.r.slips ? `爬上去又掉回来 ${b.r.slips} 次` : `越过坡顶时只有 ${b.r.yAtTop.toFixed(2)}m`;
+  console.log(`  失败 off=${b.off.toFixed(2)} 起于 (${cx(k0).toFixed(1)}, ${cz(k0).toFixed(1)}) 朝 `
+    + `${['+x(东)', '+z(北)', '-x(西)', '-z(南)'][b.run.d]} `
+    + `${b.run.cells.length - 1} 阶 ${nav.ground[k0].toFixed(2)} -> ${nav.ground[kT].toFixed(2)}`
+    + `　${how}　y: ${b.r.trace.join(' ')}`);
 }
-// 挑第一段失败的样例重放 y 轨迹：台阶抖动会表现为 y 在两个值之间来回跳
-if (fails.length) {
-  const f = fails[0].firstFail;
-  const trace = [];
-  walk(f.sx, f.sz, f.ay, fails[0].to[0], fails[0].to[1], trace);
-  const line = [];
-  for (let i = 0; i < trace.length && i < 60 * 8; i += 9) line.push(trace[i][1].toFixed(2));
-  console.log(`\n最差相位 y 轨迹（每 0.15s）：\n  ${line.join(' ')}`);
-}
+if (segFail) console.log(`\n失败：${segFail}/${kept.length} 条地段走不上去，${trialFail}/${trials} 次试走失败`);
+else console.log(`\n通过：${kept.length}/${kept.length} 条地段全部走通，${trials} 次试走 0 失败`);
+process.exit(segFail ? 1 : 0);

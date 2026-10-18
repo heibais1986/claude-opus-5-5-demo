@@ -248,10 +248,11 @@ export class World {
       const prevY = p.y;
       p.y += ent.vel.y * h;
       if (ent.vel.y <= 0) {
-        const probeUp = ent.onGround ? ent.stepHeight : 0.001;
-        // 支撑面必须用与水平碰撞同一个半径来问：上台阶的判定半径是 r，
-        // 若这里缩到 0.92r，刚踏上去的那一格（胶囊只压住台阶边缘几厘米）立刻被判踏空，
-        // 人就在台阶前无限「上去 → 掉回来」，不按空格永远过不去。
+        // 支撑查询的半径必须和上面的水平碰撞一致（都是 r）：
+        // 上台阶时角色是贴着踏面边沿迈上去的，用更小的半径查，踏面就落进
+        // 「圆没碰到盒子」的死角里 —— 上台阶刚成功、紧接着就判踏空掉回去，
+        // 在阶前来回抖动，非得后退再跳才过得去。
+        // 放宽是安全的：support() 只认 top <= maxY 的面，更大的半径不可能把人抬起来。
         const sup = this.support(p.x, p.z, r, prevY + 0.001);
         const snap = ent.onGround && ent.vel.y <= 0.01 ? Math.max(0.3, -ent.vel.y * h) : 0;
         if (sup && p.y <= sup.y + snap) {
@@ -260,7 +261,6 @@ export class World {
         } else {
           ent.onGround = false; ent.ground = null;
         }
-        void probeUp;
       } else {
         ent.onGround = false; ent.ground = null;
         // 顶头

@@ -1,107 +1,125 @@
-// 地图可走性巡检：在真实碰撞体上到处「按住 W」走一遍，统计
-//   卡住（导航说通、物理走不动）、身体埋进实体、掉出世界。
-// 用法：node tools/probe-walk.mjs [采样点数] [每方向秒数]
+// de_dust2 走一遍全图的抽检：随机取可走格，八个方向按住 W 走几秒，看会不会：
+//   stuck  没走动（既没掉下去也没挪窝）
+//   buried 结束时人埋在实体里（卡进墙/箱子里，玩家体感就是「掉到里面」）
+//   void   掉出世界（低于 voidY）
+//   offnav 走完停在导航认为不可走的地方（导航与物理口径不一致）
+// 台阶类的 bug 请用 probe-steps.mjs 看：那种抖动是亚帧级的，
+// 随机起点抽检经常正好落在能过的一侧，这里看不出来。
+//
+// 用法：node tools/probe-walk.mjs [采样格数] [每方向按住几秒] [随机种子]
+//   默认 node tools/probe-walk.mjs 400 1.6 1
 import { World, NavGrid } from '../src/physics.js';
-import { decodeGeo, makeSampler, addColliders, carveDoorways, navField } from '../src/maps/geo.js';
+import { decodeGeo, navField, makeSampler, addColliders, carveDoorways } from '../src/maps/geo.js';
 import { LAYOUT, DOORS } from '../src/maps/dust2-layout.js';
 
-const SAMPLES = Number(process.argv[2] ?? 400);
-const SECS = Number(process.argv[3] ?? 1.6);
+const SAMPLES = +(process.argv[2] || 400);
+const SECONDS = +(process.argv[3] || 1.6);
+const SEED = +(process.argv[4] || 1);
+
+const GRAV = 19, RUN = 5.7, VOID_Y = -5.5;
+const RADIUS = 0.36, HEIGHT = 1.8, STEP_H = 0.42;
+const DT = 1 / 60;
+
+// 固定种子的 LCG：同一份数据每次跑出来的抽检点一样，方便对比前后
+let seed = SEED >>> 0;
+const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
 
 const G = await decodeGeo();
 const S = makeSampler(G);
 const world = new World();
 addColliders(world, G, LAYOUT.bounds, S);
 carveDoorways(world, S, DOORS);
-const n = LAYOUT.nav;
-const nav = new NavGrid(world, n.x0, n.z0, n.x1, n.z1, n.cell, n.r, navField(G));
-const VOIDY = -5.5;
+const N = LAYOUT.nav;
+const nav = new NavGrid(world, N.x0, N.z0, N.x1, N.z1, N.cell, N.r, navField(G));
 
-const GRAV = 19, RUN = 5.7, R = 0.36, H = 1.8, STEP = 0.42;
-let seed = 20261018;
-const rnd = () => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return ((seed < 0 ? ~seed + 1 : seed) % 1e8) / 1e8; };
-
-const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]];
-const navSaysWalkable = (i, j, d) => {
-  const [di, dj] = DIRS[d];
-  if (!di || !dj) return nav.linkOk(j * nav.w + i, di, dj);
-  return nav.linkOk(j * nav.w + i, di, 0) && nav.linkOk(j * nav.w + i, 0, dj)
-    && nav.linkOk((j + dj) * nav.w + i, 0, dj) && nav.linkOk(j * nav.w + (i + di), di, 0);
+const cx = (k) => N.x0 + ((k % nav.w) + 0.5) * N.cell;
+const cz = (k) => N.z0 + (((k / nav.w) | 0) + 0.5) * N.cell;
+const cellOf = (x, z) => {
+  const i = Math.floor((x - N.x0) / N.cell), j = Math.floor((z - N.z0) / N.cell);
+  if (i < 0 || j < 0 || i >= nav.w || j >= nav.h) return -1;
+  return j * nav.w + i;
 };
 
-function walkFrom(x, z, y, wx, wz) {
-  const w = {
-    pos: { x, y, z }, vel: { x: 0, y: 0, z: 0 },
-    radius: R, height: H, stepHeight: STEP, onGround: true, ground: null, stepped: 0,
+const walkable = [];
+for (let k = 0; k < nav.w * nav.h; k++) if (!nav.block[k]) walkable.push(k);
+
+function walk(k, yaw) {
+  const dirx = -Math.sin(yaw), dirz = -Math.cos(yaw);   // 与 Actor.forward 一致
+  const sx = cx(k), sz = cz(k);
+  const ent = {
+    pos: { x: sx, y: nav.ground[k], z: sz }, vel: { x: 0, y: 0, z: 0 },
+    radius: RADIUS, height: HEIGHT, stepHeight: STEP_H,
+    onGround: true, ground: null, stepped: 0,
   };
-  const dt = 1 / 60;
-  const L = Math.hypot(wx, wz);
-  const ux = wx / L, uz = wz / L;
-  let maxProgress = 0, stuckFor = 0, maxStuck = 0, inside = 0;
-  let end = null;
-  for (let t = 0; t < SECS; t += dt) {
-    const v = w.vel;
-    if (w.onGround) {
+  const steps = Math.round(SECONDS / DT);
+  for (let f = 0; f < steps; f++) {
+    const v = ent.vel;
+    if (ent.onGround) {
       const sp = Math.hypot(v.x, v.z);
-      if (sp > 0) { const ns = Math.max(0, sp - Math.max(sp, 1.5) * 9 * dt) / sp; v.x *= ns; v.z *= ns; }
-      const cur = v.x * ux + v.z * uz, add = RUN - cur;
-      if (add > 0) { const acc = Math.min(11 * dt * RUN, add); v.x += acc * ux; v.z += acc * uz; }
+      if (sp > 0) {
+        const drop = Math.max(sp, 1.5) * 9 * DT;
+        const ns = Math.max(0, sp - drop) / sp;
+        v.x *= ns; v.z *= ns;
+      }
+      const cur = v.x * dirx + v.z * dirz, add = RUN - cur;
+      if (add > 0) { const acc = Math.min(11 * DT * RUN, add); v.x += acc * dirx; v.z += acc * dirz; }
     } else {
-      const ws = Math.min(RUN, 1.2), cur = v.x * ux + v.z * uz, add = ws - cur;
-      if (add > 0) { const acc = Math.min(12 * dt * ws, add); v.x += acc * ux; v.z += acc * uz; }
+      const cur = v.x * dirx + v.z * dirz, add = Math.min(RUN, 1.2) - cur;
+      if (add > 0) { const acc = Math.min(12 * DT * Math.min(RUN, 1.2), add); v.x += acc * dirx; v.z += acc * dirz; }
     }
-    v.y -= GRAV * dt;
-    world.move(w, dt);
-    const prog = w.pos.x * ux + w.pos.z * uz;
-    if (prog > maxProgress + 1e-4) { maxProgress = prog; stuckFor = 0; } else stuckFor += dt;
-    maxStuck = Math.max(maxStuck, stuckFor);
-    // 身体真的插进实体里：以胶囊体积问一次
-    if (world.blocked(w.pos.x, w.pos.y + 0.05, w.pos.z, R * 0.8, H - 0.15)) inside++;
-    end = [w.pos.x, w.pos.y, w.pos.z];
-    if (w.pos.y < VOIDY) return { void: true, end };
+    v.y -= GRAV * DT;
+    world.move(ent, DT);
   }
-  return {
-    progress: maxProgress - (x * ux + z * uz), maxStuck, inside, end,
-    onGround: w.onGround,
-  };
+  const p = ent.pos;
+  const moved = Math.hypot(p.x - sx, p.z - sz);
+  const nk = cellOf(p.x, p.z);
+  // 「埋进实体」必须是身子真的在墙里：只认占住中心立柱、且高出脚面 0.3m 以上的实体。
+  // 用 blocked() 那种整段胶囊判定，脚边一级 0.16m 的坎都会误报。
+  const buried = (() => {
+    const o = {};
+    for (const c of world.query(p.x - 0.3, p.z - 0.3, p.x + 0.3, p.z + 0.3)) {
+      if (!c.solid) continue;
+      if (c.top <= p.y + 0.3 || c.bottom >= p.y + HEIGHT - 0.1) continue;
+      if (World.circleOBB(c, p.x, p.z, 0.1, o)) return true;
+    }
+    return false;
+  })();
+  const out = { moved, y: p.y, x: p.x, z: p.z, kind: 'ok' };
+  if (p.y < VOID_Y) out.kind = 'void';
+  else if (buried) out.kind = 'buried';
+  else if (moved < 0.5) {
+    // 没走动要分两种：鼻子前面就是墙（正常，玩家自己会拐弯），
+    // 和导航明明说这一步能走、物理却把人钉住（导航与物理口径不一致，是真问题）。
+    const ax = sx + dirx * 0.9, az = sz + dirz * 0.9;
+    const ak = cellOf(ax, az);
+    out.kind = ak >= 0 && !nav.block[ak] && nav.ground[ak] - nav.ground[k] <= STEP_H ? 'stuck' : 'walled';
+  } else if (nk < 0 && Math.abs(p.x) < 200 && Math.abs(p.z) < 200) out.kind = 'offnav';
+  return out;
 }
 
-const cells = [];
-for (let k = 0; k < nav.w * nav.h; k++) if (!nav.block[k]) cells.push(k);
-let stuck = 0, insideN = 0, voidN = 0, offEdge = 0, tested = 0;
-const bad = [];
+const tally = { ok: 0, stuck: 0, walled: 0, buried: 0, void: 0, offnav: 0 };
+const report = { stuck: [], walled: [], buried: [], void: [], offnav: [] };
+let trials = 0;
 for (let s = 0; s < SAMPLES; s++) {
-  const k = cells[(rnd() * cells.length) | 0];
-  const i = k % nav.w, j = (k / nav.w) | 0;
-  const [x, z] = nav.center(k);
-  // 起点脚底要站在「这一格导航真正指的地面」上：NavGrid.ground 已经是物理实测面，
-  // 用 support(..., Infinity) 取最高面会把人放到头顶的棚顶上（中路走廊、门洞都有），
-  // 在那上面测出来的卡住全是假象。
-  const sup = world.support(x, z, R, nav.ground[k] + 0.5);
-  if (!sup) continue;
-  const y = sup.y + 0.02;
-  for (let d = 0; d < DIRS.length; d++) {
-    const [di, dj] = DIRS[d];
-    tested++;
-    const r = walkFrom(x, z, y, di, dj);
-    if (r.void) {
-      // 只有「导航说这边能走」才算缺陷：否则只是探针按住 W 走出了地图边界，
-      // 那是断崖边缘的正常坠落，不该算进体检结论里
-      if (navSaysWalkable(i, j, d)) { voidN++; bad.push({ kind: '掉出世界', at: [x, y, z], dir: DIRS[d], end: r.end }); }
-      else offEdge++;
-      continue;
-    }
-    if (r.inside > 30) { insideN++; bad.push({ kind: `陷进实体 ${(r.inside / 60).toFixed(1)}s`, at: [x, y, z], dir: DIRS[d], end: r.end }); }
-    else if (navSaysWalkable(i, j, d) && r.progress < 0.4 && r.maxStuck > 0.8) {
-      stuck++;
-      bad.push({ kind: `导航说通但走不动（推进 ${r.progress.toFixed(2)}m，顶 ${r.maxStuck.toFixed(1)}s）`, at: [x, y, z], dir: DIRS[d], end: r.end });
+  const k = walkable[(rnd() * walkable.length) | 0];
+  for (let d = 0; d < 8; d++) {
+    const r = walk(k, (d * Math.PI) / 4);
+    trials++;
+    tally[r.kind]++;
+    if (r.kind !== 'ok' && report[r.kind].length < 8) {
+      report[r.kind].push(`(${cx(k).toFixed(1)}, ${cz(k).toFixed(1)}) 朝 ${Math.round((d * 45))}° `
+        + `→ (${r.x.toFixed(1)}, ${r.z.toFixed(1)}) y=${r.y.toFixed(2)} 位移 ${r.moved.toFixed(2)}m`);
     }
   }
 }
-console.log(`巡检 ${SAMPLES} 个可走格 × 8 方向 = ${tested} 次：卡住 ${stuck}，陷进实体 ${insideN}，掉出世界 ${voidN}（另有 ${offEdge} 次是走出导航边界后的正常坠落，不计）`);
-const byKind = {};
-for (const b of bad) { const key = b.kind.split(/[（ ]/)[0]; byKind[key] = (byKind[key] || 0) + 1; }
-console.log('分类', JSON.stringify(byKind));
-for (const b of bad.slice(0, 30)) {
-  console.log(`  ${b.kind}  起点(${b.at.map((v) => (+v).toFixed(1)).join(',')})  方向(${b.dir.join(',')})  停在(${b.end.map((v) => (+v).toFixed(1)).join(',')})`);
+
+console.log(`抽检 ${SAMPLES} 个可走格 × 8 个方向 = ${trials} 次，每次按住 W ${SECONDS}s（种子 ${SEED}）`);
+console.log(`可走格 ${walkable.length} / ${nav.w * nav.h}`);
+console.log(`正常 ${tally.ok}，导航说能走但被钉住 ${tally.stuck}，鼻子顶着墙 ${tally.walled}，`
+  + `埋进实体 ${tally.buried}，掉出世界 ${tally.void}，走出导航 ${tally.offnav}`);
+const LABEL = { stuck: '导航说能走但被钉住', buried: '埋进实体', void: '掉出世界', offnav: '走出导航' };
+for (const kind of ['void', 'buried', 'stuck', 'offnav']) {
+  if (!report[kind].length) continue;
+  console.log(`\n${LABEL[kind]}（最多列 8 条）：`);
+  for (const line of report[kind]) console.log('  ' + line);
 }
