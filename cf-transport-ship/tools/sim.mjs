@@ -39,15 +39,39 @@ globalThis.document = { createElement: fakeCanvas };
 // ---------- 地图装配 ----------
 let world, nav, spawns, botRoutes, voidY = -3;
 if (id === 'dust2') {
-  const { decodeGeo, navField, makeSampler, addColliders, buildSpawns } = await import('../src/maps/geo.js');
-  const { LAYOUT } = await import('../src/maps/dust2-layout.js');
+  const { decodeGeo, navField, makeSampler, addColliders, carveDoorways, buildSpawns } = await import('../src/maps/geo.js');
+  const { LAYOUT, DOORS } = await import('../src/maps/dust2-layout.js');
   const { MESH_SPAWNS } = await import('../src/maps/dust2-geo.js');
-  const G = await decodeGeo();
+  const G = await decodeGeo(); if (process.env.NO_WALLS) G.wall = null;   // 对照基线用
   const S = makeSampler(G);
   world = new World();
   addColliders(world, G, LAYOUT.bounds, S);
+  // 与 dust2.js 的实际装配保持一致：门洞要在碰撞和导航两边都挖开。
+  // （以前这里两样都省了，补墙之后地道口被堵上，B 区在导航里变成孤岛——那是模拟器的账，不是地图的。）
+  carveDoorways(world, S, DOORS);
   const n = LAYOUT.nav;
-  nav = new NavGrid(world, n.x0, n.z0, n.x1, n.z1, n.cell, n.r, navField(G));
+  const field = navField(G);
+  for (const D of DOORS) {
+    const cells = [];
+    for (let j = 0; j < n.h; j++) for (let i = 0; i < n.w; i++) {
+      const cx = n.x0 + (i + 0.5) * n.cell, cz = n.z0 + (j + 0.5) * n.cell;
+      if (cx < D.x0 || cx > D.x1 || cz < D.z0 || cz > D.z1) continue;
+      const k = j * n.w + i;
+      field.y[k] = Math.round(D.ground * 100);
+      cells.push(k);
+    }
+    for (const k of cells) {
+      const i = k % n.w, j = (k / n.w) | 0;
+      for (const [di, dj] of [[1, 0], [0, 1], [-1, 0], [0, -1]]) {
+        const ni = i + di, nj = j + dj;
+        if (ni < 0 || nj < 0 || ni >= n.w || nj >= n.h) continue;
+        const nk = nj * n.w + ni;
+        if (field.y[nk] === field.blocked) continue;
+        field.link[k] |= (1 << (di === 1 ? 0 : di === -1 ? 2 : dj === 1 ? 1 : 3));
+      }
+    }
+  }
+  nav = new NavGrid(world, n.x0, n.z0, n.x1, n.z1, n.cell, n.r, field);
   spawns = { BL: buildSpawns(MESH_SPAWNS.T, 10, LAYOUT.spawnYaw.BL, S), GR: buildSpawns(MESH_SPAWNS.CT, 10, LAYOUT.spawnYaw.GR, S) };
   botRoutes = LAYOUT.bot;
   voidY = (await import('../src/maps/dust2.js')).dust2Map.voidY;

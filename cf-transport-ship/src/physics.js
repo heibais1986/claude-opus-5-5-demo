@@ -212,12 +212,17 @@ export class World {
   }
 
   // 脚下最高支撑面（top <= maxY），返回 {y, collider}
-  support(px, pz, r, maxY) {
+  // skipTag：导航做高度吸附时把「补出来的墙皮」排除在外（见 NavGrid.initField）。
+  // 补的墙是一层 0.15m 厚的墙皮（tag 'wall'），顶面不是能站人的楼板：
+  // 导航要是把它当支撑，就会把导航地面抬到墙顶上，bot 照着走上去踩着 15cm 宽的墙棱。
+  // 物理那边不排除：真踩上去了也得站得住，否则人会从墙皮上一路掉下去。
+  support(px, pz, r, maxY, skipTag) {
     const cands = this.query(px - r, pz - r, px + r, pz + r);
     let best = -Infinity, bc = null;
     const o = {};
     for (const c of cands) {
       if (!c.solid) continue;
+      if (skipTag && c.tag === skipTag) continue;
       if (c.top > maxY || c.top <= best) continue;
       if (World.circleOBB(c, px, pz, r, o)) { best = c.top; bc = c; }
     }
@@ -348,16 +353,21 @@ export class NavGrid {
       if (this.block[k]) continue;
       const gy = this.ground[k];
       const cx = this.x0 + ((k % this.w) + 0.5) * this.cell, cz = this.z0 + (((k / this.w) | 0) + 0.5) * this.cell;
-      let sup = world.support(cx, cz, SR, gy + step);
-      if (!sup || gy - sup.y > step) sup = world.support(cx, cz, SR, gy + LIFT);
+      let sup = world.support(cx, cz, SR, gy + step, 'wall');
+      if (!sup || gy - sup.y > step) sup = world.support(cx, cz, SR, gy + LIFT, 'wall');
       if (!(sup && sup.y - gy <= LIFT && gy - sup.y <= 1.5)) { this.block[k] = 1; this.cost[k] = 1; this.noFloor++; continue; }
       this.ground[k] = sup.y;
       // 格中心埋进了墙身：官方导航点位和 0.5m 体素列本来就对不齐，薄墙正好落在一个可走格里时，
       // 导航以为能走、角色却撞在墙上，寻路拉直后就会出现「导航通、物理不通」的长弦。
       // 只认「从脚下长起来、高过胸口」的实体：贴身一级台阶不算埋进去，那种格子照样能站人。
-      for (const c of world.query(cx - 0.1, cz - 0.1, cx + 0.1, cz + 0.1)) {
+      // 补出来的薄墙（tag 'wall'）按角色半径判：它只有 0.15m 厚，格中心落在墙皮外一两厘米
+      // 也等于「这格站不下人」——放行的话 bot 会照着导航笔直走进墙里，顶在墙上卡死。
+      // 其它碰撞盒仍用 0.1：0.5m 体素列本身比 0.6m 导航格细不到哪去，判太严会把整片场地剪成孤岛。
+      const R_WALL = 0.36;   // = 角色半径，见 Actor / 各探针里的 RADIUS
+      for (const c of world.query(cx - R_WALL, cz - R_WALL, cx + R_WALL, cz + R_WALL)) {
         if (!c.solid || c.bottom > sup.y + 0.1 || c.top < sup.y + 1.2) continue;
-        if (World.circleOBB(c, cx, cz, 0.1, o)) { this.block[k] = 1; this.cost[k] = 1; this.buried++; break; }
+        const rq = c.tag === 'wall' ? R_WALL : 0.1;
+        if (World.circleOBB(c, cx, cz, rq, o)) { this.block[k] = 1; this.cost[k] = 1; this.buried++; break; }
       }
     }
     // 海拔吸附之后高差变了，重判四连通。上行放宽到「跳得上」而不是「走得上」：

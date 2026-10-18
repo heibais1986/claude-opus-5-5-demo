@@ -33,6 +33,7 @@ const DIRS = [[1, 0], [0, 1], [-1, 0], [0, -1]];
 
 // ---------- 地图：与运行时同一条装配路径 ----------
 const G = await decodeGeo();
+if (process.env.NO_WALLS) G.wall = null;   // 对照用：关掉补墙看基线
 const S = makeSampler(G);
 const world = new World();
 addColliders(world, G, LAYOUT.bounds, S);
@@ -101,6 +102,15 @@ for (let j = 0; j < nav.h; j++) for (let i = 0; i < nav.w; i++) {
 // 去掉被更长地段整段包住的子段
 const kept = runs.filter((r) => !runs.some((o) =>
   o !== r && o.d === r.d && o.cells.length > r.cells.length && o.cells.includes(r.cells[0])));
+
+if (process.env.DUMP_RUNS) {
+  for (const r of kept) {
+    const k0 = r.cells[0], kT = r.cells[r.cells.length - 1];
+    console.log(`d${r.d} 从(${cx(k0).toFixed(1)},${cz(k0).toFixed(1)}) ${r.cells.length - 1}阶 ` +
+      `${nav.ground[k0].toFixed(2)}->${nav.ground[kT].toFixed(2)}`);
+  }
+  process.exit(0);
+}
 
 // ---------- 用真实的 World.move 走一遍 ----------
 // 判据不是「终点在哪」而是「有没有爬完整段并且站住」：

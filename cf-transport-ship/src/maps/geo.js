@@ -2,13 +2,15 @@
 // 碰撞体与导航场也在这里装配，避免校验脚本和运行时各搭一套地图。
 import { inflateB64 } from './blob.js';
 import { GEO_META, GEO_BLOB, SOL_META, SOL_BLOB, ROOF_BLOB, NAV_META, NAV_BLOB, LINK_BLOB } from './dust2-geo.js';
+import { WALL_META, WALL_BLOB } from './dust2-walls.js';
 
 const MAT_NAME = ['concrete', 'wood', 'metal'];
 const SURFACE = ['sand', 'wood', 'metal'];
 
 export async function decodeGeo() {
-  const [geo, sol, roof, nav, link] = await Promise.all([
-    inflateB64(GEO_BLOB), inflateB64(SOL_BLOB), inflateB64(ROOF_BLOB), inflateB64(NAV_BLOB), inflateB64(LINK_BLOB),
+  const [geo, sol, roof, nav, link, wall] = await Promise.all([
+    inflateB64(GEO_BLOB), inflateB64(SOL_BLOB), inflateB64(ROOF_BLOB), inflateB64(NAV_BLOB),
+    inflateB64(LINK_BLOB), inflateB64(WALL_BLOB),
   ]);
   const o = GEO_META.off;
   return {
@@ -16,9 +18,10 @@ export async function decodeGeo() {
     verts: new Int16Array(geo.buffer, o.verts, GEO_META.nVerts * 3),
     idx: new Uint32Array(geo.buffer, o.idx, GEO_META.nTris * 3),
     mat: new Uint8Array(geo.buffer, o.mat, GEO_META.nTris),
-    // 碰撞盒 / 顶棚：[x, z, w, d, y0, y1, mat]，单位 cm
+    // 碰撞盒 / 顶棚 / 补墙：[x, z, w, d, y0, y1, mat]，单位 cm
     sol: new Int16Array(sol.buffer, 0, SOL_META.count * 7),
     roof: new Int16Array(roof.buffer, 0, SOL_META.roofCount * 7),
+    wall: new Int16Array(wall.buffer, 0, WALL_META.count * 7),
     // 高度场是 int16 厘米（哨兵 32767），必须按两个字节一个格来解释
     navY: new Int16Array(nav.buffer, nav.byteOffset, nav.length / 2),
     link,
@@ -85,6 +88,22 @@ export function addColliders(world, G, bounds, S = makeSampler(G)) {
     world.add({
       x, y: (y0 + y1) / 2, z, sx: w, sy: y1 - y0, sz: d, yaw: 0,
       mat: 'concrete', surface: 'sand', bullet: 'block', tag: 'roof', sight: false,
+    });
+  }
+  // 补墙：烘焙的碰撞块是高度场，表达不了立在格子里的薄墙（见 tools/bake-walls.mjs），
+  // 这里是离线从真实三角面推出来的补丁。必须在 NavGrid 之前装好——NavGrid 的 initField
+  // 会把「格中心埋进墙身」的可走格封掉，导航于是跟着碰撞一起改口。
+  for (let i = 0; i < (G.wall ? G.wall.length : 0); i += 7) {
+    const x = G.wall[i] / 100, z = G.wall[i + 1] / 100;
+    const w = G.wall[i + 2] / 100, d = G.wall[i + 3] / 100;
+    const y0 = G.wall[i + 4] / 100, y1 = G.wall[i + 5] / 100;
+    const mt = G.wall[i + 6];
+    world.add({
+      x, y: (y0 + y1) / 2, z, sx: w, sy: y1 - y0, sz: d, yaw: 0,
+      mat: MAT_NAME[mt] || 'concrete', surface: SURFACE[mt] || 'sand',
+      // tag 'wall'：薄墙皮，会被导航的高度吸附刻意跳过（顶面不是能站的楼板），
+      // 也不参与门洞地面的中位数取样。见 physics.js 的 World.support / NavGrid.initField。
+      bullet: mt === 0 ? 'block' : 'pen', tag: 'wall',
     });
   }
   // 真实数据不含世界夹，用四面只有碰撞的夹墙把对战区封住（雷达按 hx>30 自动过滤掉）
